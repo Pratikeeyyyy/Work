@@ -6,6 +6,7 @@ import { api, auth } from "../api";
 const NAV = [
   { to: "/", label: "Dashboard", icon: "dashboard", end: true },
   { to: "/leads", label: "Leads", icon: "leads", end: false },
+  { to: "/discover", label: "Discover", icon: "search", end: false },
   { to: "/applications", label: "Applications", icon: "activity", end: false },
   { to: "/clients", label: "Clients", icon: "clients", end: false },
   { to: "/contracts", label: "Contracts", icon: "contracts", end: false },

@@ -120,6 +120,13 @@ impl Db {
         if !cols.iter().any(|c| c == "contract_address") {
             conn.execute("ALTER TABLE contracts ADD COLUMN contract_address TEXT", [])?;
         }
+        let lead_cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('leads')")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !lead_cols.iter().any(|c| c == "queued") {
+            conn.execute("ALTER TABLE leads ADD COLUMN queued INTEGER NOT NULL DEFAULT 0", [])?;
+        }
         Ok(())
     }
 
@@ -248,6 +255,72 @@ impl Db {
         let conn = self.conn();
         conn.execute("DELETE FROM leads WHERE id = ?1", params![id])?;
         Ok(())
+    }
+
+    /// Look up a lead id by its unique source URL (used after an insert to
+    /// score + queue the fresh lead without changing `insert_lead`'s contract).
+    pub fn lead_id_by_url(&self, url: &str) -> Result<Option<i64>, rusqlite::Error> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT id FROM leads WHERE url = ?1",
+            params![url],
+            |r| r.get(0),
+        )
+        .optional()
+    }
+
+    /// Mark a lead as part of the high-fit auto-queue (0 = off, 1 = queued).
+    pub fn set_lead_queued(&self, id: i64, queued: bool) -> Result<(), rusqlite::Error> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE leads SET queued = ?1 WHERE id = ?2",
+            params![queued as i64, id],
+        )?;
+        Ok(())
+    }
+
+    /// High-fit auto-queue (leads auto-added from discovery with a strong
+    /// profile fit), newest first.
+    pub fn list_queued_leads(&self) -> Result<Vec<Lead>, rusqlite::Error> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, source, title, description, url, budget, budget_min, budget_max, currency, location, technologies, client_name, posted_date, status, score, notes, created_at
+             FROM leads WHERE queued = 1 ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([], lead_from_row)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    // ---------- Auto-discovery settings ----------
+
+    pub fn auto_pull_enabled(&self) -> bool {
+        self.get_setting("auto_pull_enabled")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false)
+    }
+
+    pub fn auto_pull_interval_mins(&self) -> u64 {
+        self.get_setting("auto_pull_interval_mins")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30)
+    }
+
+    pub fn auto_queue_threshold(&self) -> i64 {
+        self.get_setting("auto_queue_threshold")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(75)
+    }
+
+    pub fn get_last_auto_pull(&self) -> Option<String> {
+        self.get_setting("last_auto_pull")
+    }
+
+    pub fn set_last_auto_pull(&self, now_iso: &str) {
+        let _ = self.set_setting("last_auto_pull", now_iso);
     }
 
     // ---------- Clients ----------
@@ -484,12 +557,41 @@ impl Db {
         .optional()
     }
 
+    /// Applications in the live pipeline that are due for a follow-up, i.e. in
+    /// an active status and scheduled (or idle) past a fresh window. Won/lost/
+    /// hired are excluded. Ordered by most-overdue first.
+    pub fn list_applications_due(&self) -> Result<Vec<Application>, rusqlite::Error> {
+        // Fresh window: an application needs a follow-up if there is no recorded
+        // follow-up and it's been applied/active, or it hasn't been touched in a
+        // while, or its explicit next_scheduled date has passed.
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT a.id, a.lead_id, a.client_id, a.status, a.applied_at, a.replied_at,
+                    a.interviewed_at, a.offered_at, a.hired_at, a.company, a.contact,
+                    a.next_scheduled, a.follow_up_count, a.last_follow_up, a.notes, a.created_at,
+                    l.title, l.url, l.source
+             FROM applications a LEFT JOIN leads l ON l.id = a.lead_id
+             WHERE a.status IN ('applied','replied','interviewed','offered')
+               AND a.hired_at IS NULL
+               AND (
+                    (a.next_scheduled IS NOT NULL AND a.next_scheduled <= datetime('now'))
+                 OR (COALESCE(a.last_follow_up, a.applied_at, a.created_at) <= datetime('now','-4 days'))
+               )
+             ORDER BY COALESCE(a.next_scheduled, a.applied_at, a.created_at) ASC",
+        )?;
+        let rows = stmt.query_map([], app_from_row)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     pub fn update_application(
         &self,
         id: i64,
         u: &ApplicationUpdate,
     ) -> Result<(), rusqlite::Error> {
-        let conn = self.conn();
         let cur = self.get_application(id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         let status = u.status.clone().unwrap_or_else(|| cur.status.clone());
 
@@ -543,6 +645,7 @@ impl Db {
             cur.last_follow_up.clone()
         };
 
+        let conn = self.conn();
         conn.execute(
             "UPDATE applications SET status=?1, applied_at=?2, replied_at=?3, interviewed_at=?4,
                     offered_at=?5, hired_at=?6, company=?7, contact=?8, next_scheduled=?9,
@@ -845,6 +948,83 @@ mod tests {
             ..sample_lead()
         };
         assert_eq!(score_lead(&empty), 0);
+    }
+
+    #[test]
+    fn queue_flag_roundtrip_and_listing() {
+        let db = test_db();
+        assert!(db.insert_lead(&sample_lead()).unwrap());
+        let id = db.lead_id_by_url("https://upwork.com/jobs/~test").unwrap().unwrap();
+        // Not queued by default.
+        assert!(db.list_queued_leads().unwrap().is_empty());
+        db.set_lead_queued(id, true).unwrap();
+        let q = db.list_queued_leads().unwrap();
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].url, "https://upwork.com/jobs/~test");
+        db.set_lead_queued(id, false).unwrap();
+        assert!(db.list_queued_leads().unwrap().is_empty());
+    }
+
+    #[test]
+    fn applications_due_includes_overdue_and_excludes_hired() {
+        let db = test_db();
+        assert!(db.insert_lead(&sample_lead()).unwrap());
+        let lead_id = db.lead_id_by_url("https://upwork.com/jobs/~test").unwrap().unwrap();
+        let app_id = db
+            .add_application(&NewApplication {
+                lead_id,
+                client_id: None,
+                company: Some("Acme".into()),
+                contact: None,
+                notes: None,
+            })
+            .unwrap();
+        // Move it to "applied" with an overdue follow-up window.
+        let five_days_ago = chrono::Utc::now()
+            .checked_sub_signed(chrono::Duration::days(5))
+            .unwrap()
+            .naive_utc()
+            .to_string();
+        db.update_application(
+            app_id,
+            &ApplicationUpdate {
+                status: Some("applied".into()),
+                applied_at: Some(five_days_ago.clone()),
+                replied_at: None,
+                interviewed_at: None,
+                offered_at: None,
+                hired_at: None,
+                company: None,
+                contact: None,
+                next_scheduled: Some(five_days_ago.clone()),
+                notes: None,
+                follow_up: false,
+            },
+        )
+        .unwrap();
+        let due = db.list_applications_due().unwrap();
+        assert!(due.iter().any(|a| a.id == app_id), "overdue app should be due");
+
+        // Marking it hired removes it from the due set.
+        db.update_application(
+            app_id,
+            &ApplicationUpdate {
+                status: Some("hired".into()),
+                applied_at: Some(five_days_ago.clone()),
+                replied_at: None,
+                interviewed_at: None,
+                offered_at: None,
+                hired_at: Some(chrono::Utc::now().naive_utc().to_string()),
+                company: None,
+                contact: None,
+                next_scheduled: None,
+                notes: None,
+                follow_up: false,
+            },
+        )
+        .unwrap();
+        let due_after = db.list_applications_due().unwrap();
+        assert!(!due_after.iter().any(|a| a.id == app_id), "hired app should not be due");
     }
 
     #[test]

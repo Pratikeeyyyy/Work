@@ -4,6 +4,7 @@ import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
 import Leads from "./pages/Leads";
 import Applications from "./pages/Applications";
+import Discover from "./pages/Discover";
 import Clients from "./pages/Clients";
 import Contracts from "./pages/Contracts";
 import Settings from "./pages/Settings";
@@ -60,6 +61,7 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/leads" element={<Leads />} />
         <Route path="/applications" element={<Applications />} />
+        <Route path="/discover" element={<Discover />} />
         <Route path="/clients" element={<Clients />} />
         <Route path="/contracts" element={<Contracts />} />
         <Route path="/settings" element={<Settings />} />

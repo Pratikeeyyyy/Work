@@ -26,10 +26,12 @@ pub fn router(db: Db) -> Router {
         .route("/leads", get(list_leads).post(add_lead))
         .route("/leads/import", post(import_lead_url))
         .route("/leads/rescore", post(rescore_leads))
+        .route("/leads/queue", get(lead_queue))
         .route("/leads/:id", get(get_lead).delete(remove_lead))
         .route("/leads/:id/status", patch(update_status))
         .route("/leads/:id/notes", patch(update_notes))
         .route("/leads/:id/outreach", get(lead_outreach))
+        .route("/leads/:id/apply", get(lead_apply_kit))
         .route("/leads/:id/to-client", post(to_client))
         .route("/clients", get(list_clients).post(add_client))
         .route("/clients/:id", get(get_client).put(update_client).delete(remove_client))
@@ -37,6 +39,7 @@ pub fn router(db: Db) -> Router {
         .route("/contracts/:id/deploy", post(deploy_contract))
         .route("/contracts/:id/status", patch(update_contract_status))
         .route("/applications", get(list_applications).post(add_application))
+        .route("/applications/due", get(applications_due))
         .route("/applications/:id", get(get_application).patch(update_application).delete(delete_application))
         .route("/profile", get(get_profile).put(put_profile))
         .route("/linkedin/auth-url", get(linkedin_auth_url))
@@ -45,6 +48,7 @@ pub fn router(db: Db) -> Router {
         .route("/settings/keywords", get(get_keywords).put(put_keywords))
         .route("/settings/sources", get(get_sources).put(put_sources))
         .route("/settings/linkedin", get(get_linkedin_settings).put(put_linkedin_settings))
+        .route("/settings/auto-update", get(get_auto_update_settings).put(put_auto_update_settings))
         .route("/scrape", post(scrape))
         .layer(middleware::from_fn(auth_middleware));
 
@@ -741,6 +745,90 @@ async fn scrape(
     }
     let result = scraper::run_scrape(db, &sources, &keywords, max_per_run).await;
     Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+struct AutoUpdateSettings {
+    enabled: Option<bool>,
+    interval_mins: Option<u64>,
+    threshold: Option<i64>,
+}
+
+/// High-fit auto-queue: freshly discovered leads that matched your profile and
+/// were auto-added for a quick, tailored application.
+async fn lead_queue(
+    State(db): State<Db>,
+) -> Result<Json<Vec<Lead>>, (axum::http::StatusCode, String)> {
+    db.list_queued_leads().map(Json).map_err(rusqlite_err)
+}
+
+/// One-click tailored application kit (legal *review-and-confirm*). Returns the
+/// real source URL to open plus the outreach copy pre-drafted from your profile.
+/// You review and submit on the source site — nothing is auto-submitted.
+async fn lead_apply_kit(
+    State(db): State<Db>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let lead = db
+        .get_lead(id)
+        .map_err(rusqlite_err)?
+        .ok_or((axum::http::StatusCode::NOT_FOUND, "lead not found".into()))?;
+    let profile = hunt::Profile::from_db(&db);
+    let outreach = hunt::generate_outreach(&lead, &profile);
+    Ok(Json(serde_json::json!({
+        "lead": lead,
+        "apply_url": lead.url,
+        "source": lead.source,
+        "outreach": outreach,
+        "contact": {
+            "name": profile.name,
+            "email": profile.email,
+            "portfolio": profile.portfolio,
+            "github": profile.github,
+            "linkedin": profile.linkedin,
+        },
+    })))
+}
+
+/// Applications in the live pipeline that need a nudge right now, so you know
+/// exactly who to follow up with today.
+async fn applications_due(
+    State(db): State<Db>,
+) -> Result<Json<Vec<Application>>, (axum::http::StatusCode, String)> {
+    db.list_applications_due().map(Json).map_err(rusqlite_err)
+}
+
+async fn get_auto_update_settings(State(db): State<Db>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "enabled": db.auto_pull_enabled(),
+        "interval_mins": db.auto_pull_interval_mins(),
+        "threshold": db.auto_queue_threshold(),
+        "last_pull": db.get_last_auto_pull(),
+    }))
+}
+
+async fn put_auto_update_settings(
+    State(db): State<Db>,
+    Json(s): Json<AutoUpdateSettings>,
+) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
+    if let Some(enabled) = s.enabled {
+        db.set_setting("auto_pull_enabled", if enabled { "1" } else { "0" })
+            .map_err(rusqlite_err)?;
+    }
+    if let Some(mins) = s.interval_mins {
+        if mins < 10 {
+            return Err((axum::http::StatusCode::BAD_REQUEST, "interval must be at least 10 minutes".into()));
+        }
+        db.set_setting("auto_pull_interval_mins", &mins.to_string())
+            .map_err(rusqlite_err)?;
+    }
+    if let Some(threshold) = s.threshold {
+        db.set_setting("auto_queue_threshold", &threshold.to_string())
+            .map_err(rusqlite_err)?;
+    }
+    Ok(Json(ApiMessage {
+        message: "auto-discovery settings saved".into(),
+    }))
 }
 
 fn rusqlite_err(e: rusqlite::Error) -> (axum::http::StatusCode, String) {

@@ -2,6 +2,8 @@ import type {
   ApiMessage,
   Application,
   ApplicationUpdate,
+  ApplyKit,
+  AutoUpdateSettings,
   Client,
   ContractRow,
   KeywordSetting,
@@ -114,6 +116,20 @@ export const api = {
     request<ApiMessage>("/leads/import", { method: "POST", body: JSON.stringify({ url }) }),
   rescoreLeads: () => request<{ message: string; updated: number }>("/leads/rescore", { method: "POST" }),
   leadOutreach: (id: number) => request<OutreachDraft[]>(`/leads/${id}/outreach`),
+
+  queuedLeads: () => request<Lead[]>("/leads/queue"),
+  applyKit: (id: number) => request<ApplyKit>(`/leads/${id}/apply`),
+  applicationsDue: () => request<Application[]>("/applications/due"),
+
+  getAutoUpdateSettings: () => request<AutoUpdateSettings>("/settings/auto-update"),
+  saveAutoUpdateSettings: (s: {
+    enabled?: boolean;
+    interval_mins?: number;
+    threshold?: number;
+  }) => request<ApiMessage>("/settings/auto-update", {
+    method: "PUT",
+    body: JSON.stringify(s),
+  }),
 
   listClients: (status?: string) =>
     request<Client[]>(`/clients${status ? `?status=${status}` : ""}`),

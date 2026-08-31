@@ -37,12 +37,21 @@ Covers the three scrapers (upwork, freelancer, fiverr) and the database layer
 
 ## Architecture
 
-- `main.rs` — HTTP server bootstrap, tracing, CORS
+- `main.rs` — HTTP server bootstrap, tracing, CORS, and the background auto-discovery worker (`auto_discovery_loop`)
 - `auth.rs` — single-user auth: PBKDF2 password hashing, in-memory sessions, middleware
 - `api.rs` — all REST route handlers
 - `db.rs` — SQLite schema, migrations, queries
 - `models.rs` — serde structs shared across the API and DB layers
-- `scraper/` — source collectors: `upwork.rs`, `freelancer.rs`, `fiverr.rs`
+- `scraper/` — source collectors: `upwork.rs`, `freelancer.rs`, `fiverr.rs`, `indeed.rs`
+- `hunt.rs` — profile fit-scoring and outreach generation
+
+## Auto-discovery
+
+A background task polls the reliable Indeed RSS feed on a configured interval,
+scores newly inserted leads against the user profile, and marks any lead at/above
+the fit threshold as `queued` for the Discover page. Tuned via settings:
+`auto_pull_enabled`, `auto_pull_interval_mins`, `auto_queue_threshold`. Disabled
+by default.
 
 ## Scrapers
 

@@ -209,3 +209,26 @@ export interface OutreachDraft {
   subject: string | null;
   body: string;
 }
+
+export interface ApplyKitContact {
+  name: string | null;
+  email: string | null;
+  portfolio: string | null;
+  github: string | null;
+  linkedin: string | null;
+}
+
+export interface ApplyKit {
+  lead: Lead;
+  apply_url: string;
+  source: string;
+  outreach: OutreachDraft[];
+  contact: ApplyKitContact;
+}
+
+export interface AutoUpdateSettings {
+  enabled: boolean;
+  interval_mins: number;
+  threshold: number;
+  last_pull: string | null;
+}

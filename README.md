@@ -74,9 +74,15 @@ Protected (require `Authorization: Bearer <token>`):
 | GET | `/stats` | Dashboard stats |
 | GET | `/stats` | Dashboard stats |
 | GET/POST | `/leads` | List / create leads |
-| GET/DELETE | `/leads/:id` | Get / delete a lead |
+| POST | `/leads/import` | Import a job/gig from a pasted URL |
+| POST | `/leads/rescore` | Re-score all leads against your profile |
+| GET | `/leads/queue` | High-fit auto-queue (discovery) |
+| GET | `/leads/:id` | Get a lead |
+| DELETE | `/leads/:id` | Delete a lead |
 | PATCH | `/leads/:id/status` | Update lead status |
 | PATCH | `/leads/:id/notes` | Update lead notes |
+| GET | `/leads/:id/outreach` | Generate auto-drafted outreach |
+| GET | `/leads/:id/apply` | One-click tailored application kit (review-and-confirm) |
 | POST | `/leads/:id/to-client` | Convert lead to client |
 | GET/POST | `/clients` | List / create clients |
 | GET/PUT/DELETE | `/clients/:id` | CRUD a client |
@@ -91,6 +97,7 @@ Protected (require `Authorization: Bearer <token>`):
 | GET | `/leads/:id/outreach` | Generate auto-drafted outreach (proposal / LinkedIn / email) |
 | GET/PUT | `/profile` | Your profile used for scoring + outreach |
 | GET/POST | `/applications` | List / add tracked applications |
+| GET | `/applications/due` | Applications due for a follow-up |
 | PATCH/DELETE | `/applications/:id` | Update / delete an application |
 | GET/PUT | `/settings/linkedin` | LinkedIn OAuth app config |
 | GET | `/linkedin/auth-url` | Build LinkedIn OAuth authorize URL |
@@ -106,6 +113,16 @@ Protected (require `Authorization: Bearer <token>`):
 5. **Close** — convert won leads to clients and escrow contracts protect payments.
 
 See `SETUP.md` for LinkedIn OAuth app creation and source notes.
+
+## Discover & auto-apply
+
+The **Discover** page is the hiring accelerator:
+
+1. **Auto-discovery** — enable it in Settings/Discover and the backend polls Indeed on a schedule (default 30 min, min 10), auto-imports new jobs, and scores each against your profile. Anything scoring at/above your threshold lands in the high-fit queue automatically.
+2. **One-click tailored application kit** — every queued lead has an **Apply** button that builds your proposal, LinkedIn message, and email pre-drafted from your profile, plus the real job URL. This is a **review-and-confirm** flow: you copy the copy, open the real application on the source site, and submit yourself. Nothing is auto-submitted — that keeps every source's terms safe and your accounts protected.
+3. **Follow-up due** — the Follow-up tab lists any application that's gone quiet (or whose scheduled follow-up is past) so you always know whom to nudge today, plus a one-tap **Log follow-up** and the thread's original link.
+
+Realistic expectation: this maximizes the number of tailored applications you can send, but no tool can guarantee a hire in any fixed time — hiring decisions are outside an app's control.
 
 ## Tech stack
 

@@ -4,6 +4,7 @@ pub mod indeed;
 pub mod upwork;
 
 use crate::db::Db;
+use crate::hunt;
 use crate::models::{NewLead, ScrapeResponse};
 use tokio::time::{sleep, Duration};
 
@@ -55,6 +56,10 @@ pub async fn run_scrape(
     let keywords = dedupe_truncate(keywords.clone(), 20);
     // Indeed uses a plain `q` keyword query plus an optional `l` location.
     let location = db.get_setting("location");
+    // Profile fit drives the auto-queue: any freshly discovered lead that scores
+    // at/above the threshold is marked `queued` for the Discover page.
+    let profile = hunt::Profile::from_db(&db);
+    let queue_threshold = db.auto_queue_threshold();
     let mut inserted: i64 = 0;
     let mut total_found: i64 = 0;
     let mut errors: Vec<String> = Vec::new();
@@ -80,7 +85,10 @@ pub async fn run_scrape(
                     total_found += found;
                     for lead in leads.into_iter().take(max_per_run) {
                         match db.insert_lead(&lead) {
-                            Ok(true) => inserted += 1,
+                            Ok(true) => {
+                                inserted += 1;
+                                queue_if_fit(&db, &lead, &profile, queue_threshold);
+                            }
                             Ok(false) => {}
                             Err(e) => errors.push(format!("db error: {}", e)),
                         }
@@ -95,5 +103,24 @@ pub async fn run_scrape(
         inserted,
         total_found,
         errors,
+    }
+}
+
+/// Score a freshly inserted lead against the user profile and, if it meets the
+/// fit threshold, mark it `queued` so the Discover page surfaces it for a
+/// one-click tailored application.
+fn queue_if_fit(db: &Db, lead: &NewLead, profile: &hunt::Profile, threshold: i64) {
+    let Ok(Some(id)) = db.lead_id_by_url(&lead.url) else {
+        return;
+    };
+    let Ok(Some(full)) = db.get_lead(id) else {
+        return;
+    };
+    let s = hunt::score_lead_against_profile(0, &full, profile);
+    if s != full.score {
+        let _ = db.update_lead_score(id, s);
+    }
+    if s >= threshold {
+        let _ = db.set_lead_queued(id, true);
     }
 }

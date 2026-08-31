@@ -80,10 +80,16 @@ After editing your profile, run **Rescore** on the Leads page to re-rank all lea
 On any lead, click **Track application** to add it to the Applications page, then move it through:
 `saved → applied → replied → interviewed → offered → hired` — with follow-up logging, next-step scheduling, and notes.
 
+## Discover & auto-apply
+
+- **Discover → auto-discovery**: toggle it on and the backend scans Indeed on a schedule (default every 30 min), scores new jobs against your profile, and queues anything scoring at/above the threshold. "Scan now" runs an immediate pull. Source = public Indeed RSS only (legal).
+- **Apply kit**: each queued lead's **Apply** button builds your proposal, LinkedIn message, and email from your profile, plus the real job link — a review-and-confirm flow you submit yourself.
+- **Follow-up due**: lists applications that have gone quiet so you know whom to chase today.
+
 ## Tests
 
 ```bash
-cd backend && cargo test        # 31 tests
+cd backend && cargo test        # 33 tests
 cd frontend && npx vitest run   # 19 tests
 cd contracts && npm run test    # escrow
 ```

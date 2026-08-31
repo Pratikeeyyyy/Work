@@ -45,7 +45,7 @@ Covers the three scrapers (upwork, freelancer, fiverr) and the database layer
 
 | Source | Method | Notes |
 |--------|--------|-------|
-| Upwork | Official RSS feed | Reliable |
+| Upwork | Legacy RSS + search-page fallback (`__JOB_POSTINGS_LIST_DATA__`/anchor scan) | Upwork discontinued public RSS (Aug 2024) and bot-blocks scrapers; parser degrades to a source error and recommends manual lead capture |
 | Freelancer | AJAX project search endpoint | Reliable |
 | Fiverr | `__NEXT_DATA__` JSON + regex fallback | Fiverr blocks bots; parser is defensive, falls back gracefully |
 

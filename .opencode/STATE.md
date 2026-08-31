@@ -69,9 +69,30 @@
 ### Component READMEs
 - `backend/README.md`, `frontend/README.md`, `contracts/README.md`
 
+## Completed: Upwork scraper resilience + E2E verification
+
+### Upwork scraper (`backend/src/scraper/upwork.rs`)
+- Discovered Upwork **discontinued public RSS feeds (Aug 2024)**; the legacy `/ab/feed/jobs/rss` endpoint now returns `410 Gone` without auth.
+- Refactored `fetch()` to try the legacy RSS first (harmless if it ever works), then fall back to scraping the public search page:
+  - `parse_search_page()` — extracts embedded `window.__JOB_POSTINGS_LIST_DATA__` via `parse_embedded_json()` (recursive array scan), with an anchor/link regex fallback for layout drift.
+  - `job_to_lead()` / `extract_budget_fields()` — maps titles, urls, fixed budgets and hourly rate ranges, skills.
+- All three job sites bot-block non-browser requests, so scrapes surface as source errors (surfaced through the `errors` array) instead of crashing — the live pipeline was verified to handle this gracefully.
+- `cargo test`: now **17 passing** (5 new Upwork tests: embedded JSON, hourly rate, search-page fallback, RSS, meta).
+
+### End-to-end API verification (in-memory SQLite, live binary)
+Ran the running backend on `127.0.0.1:8091` and exercised the full flow:
+- `POST /clients` → created client id 1
+- `POST /contracts` → created contract
+- `POST /contracts/1/deploy` → recorded tx_hash + contract_address
+- `PATCH /contracts/1/status` → walked funded → in_progress → submitted → completed (all accepted)
+- `PATCH /contracts/1/status` with invalid status → correctly rejected (HTTP 400)
+- `GET /stats` → contracts=1, clients=1
+- `POST /scrape` (upwork) → returned `errors: [upwork / rust] status 410 Gone` without crashing (graceful source-level error handling confirmed)
+
 ## Remaining gaps (future work)
 
 - No Sepolia deployment yet (needs `.env` — blocked on credentials)
+- Live scraping of job sites is limited by anti-bot measures; runs degrade to source errors. A production deployment should use authenticated sessions, a headless browser, or third-party job APIs/actors for reliable ingestion.
 
 ## How to run
 

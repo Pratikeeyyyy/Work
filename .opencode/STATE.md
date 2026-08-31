@@ -6,7 +6,6 @@
 
 - Branch: `main`, clean tree, pushed to `origin/main`
 - Remote: `Pratikeeyyyy/Work`
-- 5 commits: contracts → backend → frontend → 2 merges
 
 ## What's done
 
@@ -22,45 +21,26 @@
 - Full CRUD for leads, clients, contracts
 - Scrape endpoint with Upwork RSS, Freelancer AJAX, Fiverr regex (fragile)
 - Deploy endpoint records tx_hash + contract_address
-- **Missing**: contract lifecycle status tracking beyond "deployed"
+- `PATCH /contracts/:id/status` — lifecycle status updates (deployed/funded/in_progress/submitted/completed/disputed/refunded)
 
 ### frontend/
 - React + Vite + Tailwind on `:5173`
 - Pages: Dashboard, Leads, Clients, Contracts, Settings
 - Wallet integration (MetaMask via ethers v6)
 - Deploy escrow from wallet (one-shot)
-- **Missing**: escrow lifecycle actions (start/submit/approve/dispute/refund)
+- **Escrow lifecycle UX (done)**: Contracts page shows on-chain state (via `getEscrowInfo`), role-based action buttons (Start work / Submit work / Approve & pay / Raise dispute / Cancel & refund / Refund after deadline / Resolve dispute with 50/50 split), on-chain info panel (state, deposit, deadline, mediator)
 
-## Current task: Escrow lifecycle UX
+## Completed: Escrow lifecycle UX
 
-### What needs to be built
+### Backend
+- `db.rs`: added `update_contract_status(id, status)`
+- `api.rs`: added `PATCH /contracts/:id/status` route + handler (validates statuses, exists check)
 
-1. **Backend** — `PATCH /contracts/:id/status` endpoint + `update_contract_status` in db.rs
-2. **Frontend lib/escrow.ts** — wallet functions for: `startWork`, `submitWork`, `approve`, `cancelBeforeWork`, `raiseDispute`, `resolveDispute`, `refundAfterDeadline`, `getEscrowInfo`
-3. **Frontend api.ts** — `updateContractStatus(id, status)` method
-4. **Frontend Badge.tsx** — add `in_progress`, `submitted` tones
-5. **Frontend Contracts.tsx** — show on-chain state, action buttons based on role (client/freelancer/mediator) and current state
-6. **Backend db.rs** — `update_contract_status(id, status)` method
-
-### Contract state machine (for reference)
-
-```
-Funded(0) → startWork() → InProgress(1) → submitWork() → Submitted(2)
-Submitted(2) → approve() → Completed(3)
-InProgress(1) | Submitted(2) → raiseDispute() → Disputed(4)
-Disputed(4) → resolveDispute(share) → Completed(3)
-Funded(0) → cancelBeforeWork() → Refunded(5)
-After deadline → refundAfterDeadline() → Refunded(5)
-```
-
-### Files to modify
-
-- `backend/src/db.rs` — add `update_contract_status()`
-- `backend/src/api.rs` — add route + handler for `PATCH /contracts/:id/status`
-- `frontend/src/lib/escrow.ts` — add all escrow action functions
-- `frontend/src/api.ts` — add `updateContractStatus()`
-- `frontend/src/components/Badge.tsx` — add `in_progress`, `submitted` statuses
-- `frontend/src/pages/Contracts.tsx` — lifecycle actions UI
+### Frontend
+- `lib/escrow.ts`: added `getEscrowInfo` + all action wrappers (`startWork`, `submitWork`, `approveWork`, `cancelBeforeWork`, `raiseDispute`, `refundAfterDeadline`, `resolveDispute`) + `EscrowInfo` type + `EscrowState` constants
+- `api.ts`: added `updateContractStatus(id, status)`
+- `components/Badge.tsx`: added `in_progress` (violet), `submitted` (amber) tones
+- `pages/Contracts.tsx`: on-chain state loader, `EscrowActions` role/state-aware buttons, `OnChainInfo` panel, `DisputeModal` (mediator split)
 
 ## Other known gaps (future work)
 

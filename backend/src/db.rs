@@ -386,6 +386,15 @@ impl Db {
         Ok(())
     }
 
+    pub fn update_contract_status(&self, id: i64, status: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE contracts SET status=?1 WHERE id=?2",
+            params![status, id],
+        )?;
+        Ok(())
+    }
+
     // ---------- Settings ----------
 
     pub fn get_setting(&self, key: &str) -> Option<String> {

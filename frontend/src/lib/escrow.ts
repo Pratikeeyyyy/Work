@@ -8,6 +8,42 @@ export interface DeployResult {
   txHash: string;
 }
 
+// Contract-literal escrow states: Funded(0) InProgress(1) Submitted(2)
+// Completed(3) Disputed(4) Refunded(5)
+export interface EscrowInfo {
+  client: string;
+  freelancer: string;
+  mediator: string;
+  amount: bigint;
+  deadline: bigint;
+  state: number;
+  submittedAt: bigint;
+}
+
+export type EscrowState = "funded" | "in_progress" | "submitted" | "completed" | "disputed" | "refunded";
+
+export const ESCROW_STATES: EscrowState[] = [
+  "funded",
+  "in_progress",
+  "submitted",
+  "completed",
+  "disputed",
+  "refunded",
+];
+
+export function contractFor(
+  signerOrProvider: ethers.Signer | ethers.Provider,
+  address: string,
+): ethers.Contract {
+  return new ethers.Contract(address, artifact.abi as ethers.InterfaceAbi, signerOrProvider);
+}
+
+async function sendWait(tx: Promise<unknown>): Promise<string | null> {
+  const t = (await tx) as { wait?: () => Promise<{ hash?: string } | null> };
+  const receipt = await t.wait?.();
+  return receipt?.hash ?? null;
+}
+
 /**
  * Deploys contracts/FreelanceEscrow.sol as the client (sender), depositing
  * amountWei in the same transaction. Returns the deployed address + tx hash.
@@ -51,4 +87,79 @@ export function explorerUrl(
   if (!base) return { name: `chain ${chainId ?? "?"}`, url: "" };
   const kind = hashOrAddress.length === 66 ? "tx" : "address";
   return { name: base.replace("https://", ""), url: `${base}/${kind}/${hashOrAddress}` };
+}
+
+export async function getEscrowInfo(
+  provider: ethers.Provider,
+  contractAddress: string,
+): Promise<EscrowInfo> {
+  const c = contractFor(provider, contractAddress);
+  const [client, freelancer, mediator, amount, deadline, state, submittedAt] =
+    await c.getInfo();
+  return {
+    client: client as string,
+    freelancer: freelancer as string,
+    mediator: mediator as string,
+    amount: amount as bigint,
+    deadline: deadline as bigint,
+    state: state as number,
+    submittedAt: submittedAt as bigint,
+  };
+}
+
+export async function startWork(
+  signer: ethers.Signer,
+  contractAddress: string,
+): Promise<string> {
+  const c = contractFor(signer, contractAddress);
+  return (await sendWait(c.startWork())) ?? "";
+}
+
+export async function submitWork(
+  signer: ethers.Signer,
+  contractAddress: string,
+): Promise<string> {
+  const c = contractFor(signer, contractAddress);
+  return (await sendWait(c.submitWork())) ?? "";
+}
+
+export async function approveWork(
+  signer: ethers.Signer,
+  contractAddress: string,
+): Promise<string> {
+  const c = contractFor(signer, contractAddress);
+  return (await sendWait(c.approve())) ?? "";
+}
+
+export async function cancelBeforeWork(
+  signer: ethers.Signer,
+  contractAddress: string,
+): Promise<string> {
+  const c = contractFor(signer, contractAddress);
+  return (await sendWait(c.cancelBeforeWork())) ?? "";
+}
+
+export async function raiseDispute(
+  signer: ethers.Signer,
+  contractAddress: string,
+): Promise<string> {
+  const c = contractFor(signer, contractAddress);
+  return (await sendWait(c.raiseDispute())) ?? "";
+}
+
+export async function refundAfterDeadline(
+  signer: ethers.Signer,
+  contractAddress: string,
+): Promise<string> {
+  const c = contractFor(signer, contractAddress);
+  return (await sendWait(c.refundAfterDeadline())) ?? "";
+}
+
+export async function resolveDispute(
+  signer: ethers.Signer,
+  contractAddress: string,
+  freelancerShareWei: bigint,
+): Promise<string> {
+  const c = contractFor(signer, contractAddress);
+  return (await sendWait(c.resolveDispute(freelancerShareWei))) ?? "";
 }

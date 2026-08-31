@@ -26,6 +26,8 @@ const STATUS_TONE: Record<string, Tone> = {
   draft: "slate",
   deployed: "indigo",
   funded: "sky",
+  in_progress: "violet",
+  submitted: "amber",
   completed: "emerald",
   disputed: "rose",
   refunded: "slate",

@@ -3,7 +3,19 @@ import { ethers } from "ethers";
 import { api } from "../api";
 import type { Client, ContractRow, NewContract } from "../types";
 import { formatDate, formatWei, shortAddress } from "../lib/format";
-import { deployFreelanceEscrow, explorerUrl } from "../lib/escrow";
+import {
+  approveWork,
+  cancelBeforeWork,
+  deployFreelanceEscrow,
+  explorerUrl,
+  getEscrowInfo,
+  raiseDispute,
+  refundAfterDeadline,
+  resolveDispute,
+  startWork,
+  submitWork,
+  type EscrowInfo,
+} from "../lib/escrow";
 import { useWallet } from "../lib/wallet";
 import { Badge, statusTone } from "../components/Badge";
 import Button from "../components/Button";
@@ -19,6 +31,9 @@ export default function Contracts() {
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [deployTarget, setDeployTarget] = useState<ContractRow | null>(null);
+  const [escrowInfo, setEscrowInfo] = useState<Record<number, EscrowInfo | null>>({});
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [disputeTarget, setDisputeTarget] = useState<ContractRow | null>(null);
   const { account, chainId, provider } = useWallet();
   const { notify } = useToast();
 
@@ -74,6 +89,114 @@ export default function Contracts() {
       notify(`Escrow deployed at ${shortAddress(contractAddress)}`);
       setDeployTarget(null);
       void load();
+    },
+    [account, provider, notify, load],
+  );
+
+  // Load on-chain escrow info for any deployed contract.
+  useEffect(() => {
+    if (!provider) return;
+    let cancelled = false;
+    const targets = contracts.filter((c) => c.contract_address && c.status !== "draft");
+    targets.forEach(async (c) => {
+      if (!c.contract_address) return;
+      getEscrowInfo(provider, c.contract_address)
+        .then((info) => {
+          if (!cancelled) setEscrowInfo((prev) => ({ ...prev, [c.id]: info }));
+        })
+        .catch(() => {
+          if (!cancelled) setEscrowInfo((prev) => ({ ...prev, [c.id]: null }));
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [contracts, provider]);
+
+  const isAddress = (addr: string | null | undefined, accountStr: string | null | undefined) =>
+    !!addr && !!accountStr && addr.toLowerCase() === accountStr.toLowerCase();
+
+  const runLifecycle = useCallback(
+    async (contract: ContractRow, action: string) => {
+      if (!provider || !account) {
+        notify("Connect your wallet to manage the escrow", "error");
+        return;
+      }
+      if (!contract.contract_address) {
+        notify("Deploy the escrow first", "error");
+        return;
+      }
+      setBusyId(contract.id);
+      try {
+        const signer = await provider.getSigner();
+        let status: string | null = null;
+        let txHash: string | null = null;
+        notify("Waiting for wallet confirmation…", "info");
+
+        switch (action) {
+          case "start":
+            txHash = await startWork(signer, contract.contract_address);
+            status = "in_progress";
+            break;
+          case "submit":
+            txHash = await submitWork(signer, contract.contract_address);
+            status = "submitted";
+            break;
+          case "approve":
+            txHash = await approveWork(signer, contract.contract_address);
+            status = "completed";
+            break;
+          case "cancel":
+            txHash = await cancelBeforeWork(signer, contract.contract_address);
+            status = "refunded";
+            break;
+          case "dispute":
+            txHash = await raiseDispute(signer, contract.contract_address);
+            status = "disputed";
+            break;
+          case "refund":
+            txHash = await refundAfterDeadline(signer, contract.contract_address);
+            status = "refunded";
+            break;
+          default:
+            notify("Unknown action", "error");
+            return;
+        }
+
+        if (status) await api.updateContractStatus(contract.id, status);
+        if (txHash) {
+          notify(`${action} confirmed: ${shortAddress(txHash)}`);
+        }
+        void load();
+      } catch (e) {
+        notify(e instanceof Error ? e.message : `${action} failed`, "error");
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [account, provider, notify, load],
+  );
+
+  const resolveDisputeAction = useCallback(
+    async (contract: ContractRow, shareWei: bigint) => {
+      if (!provider || !account || !contract.contract_address) {
+        notify("Connect your wallet to resolve the dispute", "error");
+        return;
+      }
+      setBusyId(contract.id);
+      try {
+        const signer = await provider.getSigner();
+        notify("Waiting for wallet confirmation…", "info");
+        await resolveDispute(signer, contract.contract_address, shareWei);
+        await api.updateContractStatus(contract.id, "completed");
+        notify("Dispute resolved — funds split");
+        setDisputeTarget(null);
+        void load();
+      } catch (e) {
+        notify(e instanceof Error ? e.message : "Failed to resolve dispute", "error");
+      } finally {
+        setBusyId(null);
+      }
     },
     [account, provider, notify, load],
   );
@@ -169,12 +292,27 @@ export default function Contracts() {
                       Deploy escrow
                     </Button>
                   )}
+                  {contract.status !== "draft" && (
+                    <EscrowActions
+                      contract={contract}
+                      escrow={escrowInfo[contract.id]}
+                      account={account}
+                      isAddress={isAddress}
+                      busy={busyId === contract.id}
+                      onAction={runLifecycle}
+                      onResolve={() => setDisputeTarget(contract)}
+                    />
+                  )}
                 </div>
 
                 {isClientDeployer && contract.status === "draft" && (
                   <p className="mt-3 rounded-lg bg-sky-50 px-3 py-2 text-xs text-sky-700">
                     You are the recorded client — deploying will lock your deposit in escrow.
                   </p>
+                )}
+
+                {contract.status !== "draft" && escrowInfo[contract.id] && (
+                  <OnChainInfo info={escrowInfo[contract.id] as EscrowInfo} chainId={chainId} />
                 )}
               </article>
             );
@@ -202,6 +340,18 @@ export default function Contracts() {
             await deploy(target);
           } catch (e) {
             notify(e instanceof Error ? e.message : "Deployment failed", "error");
+          }
+        }}
+      />
+
+      <DisputeModal
+        target={disputeTarget}
+        onClose={() => setDisputeTarget(null)}
+        onResolve={async (target, shareWei) => {
+          try {
+            await resolveDisputeAction(target, shareWei);
+          } catch (e) {
+            notify(e instanceof Error ? e.message : "Failed to resolve dispute", "error");
           }
         }}
       />
@@ -591,6 +741,224 @@ function DeployModal({
           Mediator resolves disputes by splitting funds. Without one, disputes stay locked until the
           client approves or the deadline refunds. Explorer:{" "}
           {chainId ? `chain ${chainId}` : "connect wallet to see links"}.
+        </p>
+      </div>
+    </Modal>
+  );
+}
+
+const STATE_NAMES = ["Funded", "In progress", "Submitted", "Completed", "Disputed", "Refunded"];
+
+function OnChainInfo({ info, chainId }: { info: EscrowInfo; chainId: number | null }) {
+  const deadline = new Date(Number(info.deadline) * 1000);
+  const fields: { label: string; value: string }[] = [
+    { label: "On-chain state", value: STATE_NAMES[info.state] ?? `State ${info.state}` },
+    { label: "Deposited", value: formatWei(info.amount.toString()) },
+    { label: "Deadline", value: deadline.toLocaleString() },
+  ];
+  return (
+    <div className="mt-3 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs text-slate-600">
+      <div className="flex flex-wrap gap-x-6 gap-y-1.5">
+        {fields.map((f) => (
+          <div key={f.label}>
+            <span className="text-slate-400">{f.label}: </span>
+            <span className="font-medium text-slate-700">{f.value}</span>
+          </div>
+        ))}
+        <div>
+          <span className="text-slate-400">Mediator: </span>
+          <ChainLink chainId={chainId} hashOrAddress={info.mediator} label={shortAddress(info.mediator)} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EscrowActions({
+  contract,
+  escrow,
+  account,
+  isAddress,
+  busy,
+  onAction,
+  onResolve,
+}: {
+  contract: ContractRow;
+  escrow: EscrowInfo | null | undefined;
+  account: string | null;
+  isAddress: (addr: string | null | undefined, acc: string | null | undefined) => boolean;
+  busy: boolean;
+  onAction: (contract: ContractRow, action: string) => void;
+  onResolve: () => void;
+}) {
+  const { notify } = useToast();
+  const state = escrow?.state ?? -1;
+  const isClient = isAddress(contract.client_address, account);
+  const isFreelancer = isAddress(contract.freelancer_address, account);
+  const isMediator = !!escrow && isAddress(escrow.mediator, account);
+  if (!account) {
+    return (
+      <Button size="sm" variant="secondary" onClick={() => notify("Connect your wallet to manage the escrow", "error")}>
+        Manage escrow
+      </Button>
+    );
+  }
+
+  const Btn = ({ action, label, variant = "secondary", disabled }: {
+    action: string;
+    label: string;
+    variant?: "primary" | "secondary" | "danger";
+    disabled?: boolean;
+  }) => (
+    <Button
+      size="sm"
+      variant={variant}
+      loading={busy}
+      disabled={disabled}
+      onClick={() => onAction(contract, action)}
+    >
+      {label}
+    </Button>
+  );
+
+  switch (state) {
+    case 0: // Funded
+      return isFreelancer ? <Btn action="start" label="Start work" /> : null;
+    case 1: // InProgress
+      return (
+        <>
+          {isFreelancer && <Btn action="submit" label="Submit work" />}
+          {(isClient || isFreelancer) && (
+            <Btn action="dispute" label="Raise dispute" variant="danger" />
+          )}
+        </>
+      );
+    case 2: // Submitted
+      return (
+        <>
+          {isClient && <Btn action="approve" label="Approve & pay" />}
+          {(isClient || isFreelancer) && (
+            <Btn action="dispute" label="Raise dispute" variant="danger" />
+          )}
+        </>
+      );
+    case 3: // Completed
+      return <span className="text-xs font-medium text-emerald-700">Funds released</span>;
+    case 4: // Disputed
+      return isMediator ? (
+        <Button size="sm" loading={busy} onClick={onResolve}>
+          Resolve dispute
+        </Button>
+      ) : (
+        <span className="text-xs font-medium text-rose-700">Awaiting mediator</span>
+      );
+    case 5: // Refunded
+      return <span className="text-xs font-medium text-slate-500">Escrow closed (refunded)</span>;
+    default:
+      return (
+        <>
+          {isClient && <Btn action="cancel" label="Cancel & refund" variant="danger" />}
+          {isClient && <Btn action="refund" label="Refund after deadline" />}
+          <Btn
+            action="dispute"
+            label="Raise dispute"
+            variant="danger"
+            disabled={!isClient && !isFreelancer}
+          />
+        </>
+      );
+  }
+}
+
+function DisputeModal({
+  target,
+  onClose,
+  onResolve,
+}: {
+  target: ContractRow | null;
+  onClose: () => void;
+  onResolve: (target: ContractRow, shareWei: bigint) => void;
+}) {
+  const [shareEth, setShareEth] = useState("");
+  const [resolving, setResolving] = useState(false);
+  const { notify } = useToast();
+
+  useEffect(() => {
+    if (target) {
+      const half = BigInt(target.amount_wei ?? "0") / 2n;
+      setShareEth(ethers.formatEther(half));
+    }
+  }, [target]);
+
+  if (!target) return null;
+
+  const resolve = () => {
+    let shareWei: bigint;
+    try {
+      shareWei = ethers.parseEther(shareEth || "0");
+    } catch {
+      notify("Enter a valid amount in ETH", "error");
+      return;
+    }
+    const amount = BigInt(target.amount_wei ?? "0");
+    if (shareWei < 0n || shareWei > amount) {
+      notify("Freelancer share must be between 0 and the escrow amount", "error");
+      return;
+    }
+    setResolving(true);
+    try {
+      onResolve(target, shareWei);
+    } finally {
+      setResolving(false);
+    }
+  };
+
+  const input =
+    "mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20";
+  const label = "block text-sm font-medium text-slate-700";
+
+  return (
+    <Modal
+      open
+      title="Resolve dispute"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={resolving}>
+            Cancel
+          </Button>
+          <Button loading={resolving} onClick={resolve}>
+            Split funds
+          </Button>
+        </>
+      }
+    >
+      <dl className="space-y-2 rounded-lg bg-slate-50 p-4 text-sm">
+        <div className="flex justify-between">
+          <dt className="text-slate-500">Project</dt>
+          <dd className="font-medium text-slate-900">{target.title}</dd>
+        </div>
+        <div className="flex justify-between">
+          <dt className="text-slate-500">Escrow amount</dt>
+          <dd className="font-medium text-slate-900">{formatWei(target.amount_wei)}</dd>
+        </div>
+      </dl>
+
+      <div className="mt-4">
+        <label className={label} htmlFor="dispute-share">
+          Freelancer share (ETH)
+        </label>
+        <input
+          id="dispute-share"
+          className={input}
+          type="number"
+          min="0"
+          step="0.01"
+          value={shareEth}
+          onChange={(e) => setShareEth(e.target.value)}
+        />
+        <p className="mt-2 text-xs text-slate-500">
+          The remainder is returned to the client. Defaults to a 50/50 split.
         </p>
       </div>
     </Modal>

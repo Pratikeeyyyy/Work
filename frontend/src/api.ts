@@ -87,6 +87,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(result),
     }),
+  updateContractStatus: (id: number, status: string) =>
+    request<ApiMessage>(`/contracts/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }),
 
   getKeywords: () => request<KeywordSetting>("/settings/keywords"),
   saveKeywords: (keywords: string[]) =>

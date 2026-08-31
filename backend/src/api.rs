@@ -19,6 +19,7 @@ pub fn router(db: Db) -> Router {
         .route("/clients/:id", get(get_client).put(update_client).delete(remove_client))
         .route("/contracts", get(list_contracts).post(add_contract))
         .route("/contracts/:id/deploy", post(deploy_contract))
+        .route("/contracts/:id/status", patch(update_contract_status))
         .route("/settings/keywords", get(get_keywords).put(put_keywords))
         .route("/settings/sources", get(get_sources).put(put_sources))
         .route("/scrape", post(scrape))
@@ -254,6 +255,33 @@ async fn deploy_contract(
         .map_err(rusqlite_err)?;
     Ok(Json(ApiMessage {
         message: format!("Escrow deployed. tx hash: {tx_hash}."),
+    }))
+}
+
+async fn update_contract_status(
+    State(db): State<Db>,
+    Path(id): Path<i64>,
+    Json(s): Json<StatusUpdate>,
+) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
+    let valid = [
+        "deployed",
+        "funded",
+        "in_progress",
+        "submitted",
+        "completed",
+        "disputed",
+        "refunded",
+    ];
+    if !valid.contains(&s.status.as_str()) {
+        return Err((axum::http::StatusCode::BAD_REQUEST, "invalid status".into()));
+    }
+    let contracts = db.list_contracts().map_err(rusqlite_err)?;
+    if !contracts.iter().any(|c| c.id == id) {
+        return Err((axum::http::StatusCode::NOT_FOUND, "contract not found".into()));
+    }
+    db.update_contract_status(id, &s.status).map_err(rusqlite_err)?;
+    Ok(Json(ApiMessage {
+        message: "contract status updated".into(),
     }))
 }
 

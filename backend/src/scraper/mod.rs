@@ -1,5 +1,6 @@
 pub mod freelancer;
 pub mod fiverr;
+pub mod indeed;
 pub mod upwork;
 
 use crate::db::Db;
@@ -52,6 +53,8 @@ pub async fn run_scrape(
     max_per_run: usize,
 ) -> ScrapeResponse {
     let keywords = dedupe_truncate(keywords.clone(), 20);
+    // Indeed uses a plain `q` keyword query plus an optional `l` location.
+    let location = db.get_setting("location");
     let mut inserted: i64 = 0;
     let mut total_found: i64 = 0;
     let mut errors: Vec<String> = Vec::new();
@@ -68,6 +71,7 @@ pub async fn run_scrape(
                 "upwork" | "upwork.com" => upwork::fetch(&kw).await,
                 "freelancer" | "freelancer.com" => freelancer::fetch(&kw).await,
                 "fiverr" | "fiverr.com" => fiverr::fetch(&kw).await,
+                "indeed" | "indeed.com" => indeed::fetch(&kw, location.as_deref()).await,
                 other => Err(format!("unknown source: {}", other)),
             };
             match result {

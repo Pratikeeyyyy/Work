@@ -1,12 +1,17 @@
 import type {
   ApiMessage,
+  Application,
+  ApplicationUpdate,
   Client,
   ContractRow,
   KeywordSetting,
   Lead,
+  NewApplication,
   NewClient,
   NewContract,
   NewLead,
+  OutreachDraft,
+  Profile,
   ScrapeResponse,
   Stats,
 } from "./types";
@@ -66,6 +71,10 @@ export const api = {
     }),
   convertLead: (id: number) =>
     request<ApiMessage>(`/leads/${id}/to-client`, { method: "POST" }),
+  importLeadUrl: (url: string) =>
+    request<ApiMessage>("/leads/import", { method: "POST", body: JSON.stringify({ url }) }),
+  rescoreLeads: () => request<{ message: string; updated: number }>("/leads/rescore", { method: "POST" }),
+  leadOutreach: (id: number) => request<OutreachDraft[]>(`/leads/${id}/outreach`),
 
   listClients: (status?: string) =>
     request<Client[]>(`/clients${status ? `?status=${status}` : ""}`),
@@ -108,4 +117,31 @@ export const api = {
 
   scrape: (body: { sources?: string[]; keywords?: string[] } = {}) =>
     request<ScrapeResponse>("/scrape", { method: "POST", body: JSON.stringify(body) }),
+
+  listApplications: () => request<Application[]>("/applications"),
+  addApplication: (app: NewApplication) =>
+    request<ApiMessage>("/applications", { method: "POST", body: JSON.stringify(app) }),
+  updateApplication: (id: number, update: ApplicationUpdate) =>
+    request<ApiMessage>(`/applications/${id}`, { method: "PATCH", body: JSON.stringify(update) }),
+  deleteApplication: (id: number) =>
+    request<ApiMessage>(`/applications/${id}`, { method: "DELETE" }),
+
+  getProfile: () => request<Profile>("/profile"),
+  saveProfile: (profile: Profile) =>
+    request<ApiMessage>("/profile", { method: "PUT", body: JSON.stringify(profile) }),
+
+  getLinkedinSettings: () =>
+    request<{ client_id: string; client_secret_set: boolean; redirect_uri: string }>("/settings/linkedin"),
+  saveLinkedinSettings: (s: { client_id?: string; client_secret?: string; redirect_uri?: string }) =>
+    request<ApiMessage>("/settings/linkedin", { method: "PUT", body: JSON.stringify(s) }),
+  linkedinAuthUrl: (redirectUri?: string) =>
+    request<{ url: string; state: string }>(
+      `/linkedin/auth-url${redirectUri ? `?redirect_uri=${encodeURIComponent(redirectUri)}` : ""}`,
+    ),
+  linkedinCallback: (body: { code: string; state?: string; redirect_uri?: string }) =>
+    request<unknown>("/linkedin/callback", { method: "POST", body: JSON.stringify(body) }),
+  linkedinStatus: () =>
+    request<{ connected: boolean; configured: boolean; member_name: string; client_id: string }>(
+      "/linkedin/status",
+    ),
 };

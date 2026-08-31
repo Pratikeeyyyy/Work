@@ -19,16 +19,24 @@
 ### backend/
 - Rust/Axum REST API on `:8080`, SQLite (`leadgen.db`)
 - Full CRUD for leads, clients, contracts
-- Scrape endpoint with Upwork RSS, Freelancer AJAX, Fiverr regex (fragile)
+- Scrape endpoint with Upwork, Freelancer, Fiverr (fragile) + **Indeed RSS**
 - Deploy endpoint records tx_hash + contract_address
 - `PATCH /contracts/:id/status` — lifecycle status updates (deployed/funded/in_progress/submitted/completed/disputed/refunded)
+- **Job-hunt automation (hunt.rs)**: Profile (load/save via settings), `score_lead_against_profile` (skills + location + recency, 0–100), `generate_outreach` (proposal / linkedin_message / email from profile), LinkedIn OAuth helpers (`auth_url`, `callback`, `me`, `connect`), `lead_from_url`/`guess_source`
+- **Applications DB** (`applications` table): CRUD, stage auto-timestamping, follow-up counts, lead status sync, dedupe by lead
+- **New endpoints**: `/leads/import`, `/leads/rescore`, `/leads/:id/outreach`, `/applications` CRUD, `/profile` GET/PUT, `/settings/linkedin`, `/linkedin/auth-url|callback|status`
+- `cargo test`: **27 passing** (Indeed parse/remote tests, hunt scoring/outreach/profile/LinkedIn tests, applications)
 
 ### frontend/
 - React + Vite + Tailwind on `:5173`
-- Pages: Dashboard, Leads, Clients, Contracts, Settings
+- Pages: Dashboard, Leads, **Applications**, Clients, Contracts, Settings
 - Wallet integration (MetaMask via ethers v6)
 - Deploy escrow from wallet (one-shot)
 - **Escrow lifecycle UX (done)**: Contracts page shows on-chain state (via `getEscrowInfo`), role-based action buttons (Start work / Submit work / Approve & pay / Raise dispute / Cancel & refund / Refund after deadline / Resolve dispute with 50/50 split), on-chain info panel (state, deposit, deadline, mediator)
+- **Settings**: My profile form (skills/location/rate/bio/etc for scoring + outreach) + LinkedIn OAuth app config + connect button + keywords/sources sections
+- **Leads**: Import-URL modal, Generate-outreach modal (3 copy-paste drafts), Track-application action, rescore
+- **Applications page**: pipeline cards with saved→applied→replied→interviewed→offered→hired stage stepper, reject/close, follow-up logging, notes/next-step editing
+- `npm run build` (typecheck + vite) green; `npx vitest run`: **19 passing**
 
 ## Completed: Escrow lifecycle UX
 
@@ -89,10 +97,38 @@ Ran the running backend on `127.0.0.1:8091` and exercised the full flow:
 - `GET /stats` → contracts=1, clients=1
 - `POST /scrape` (upwork) → returned `errors: [upwork / rust] status 410 Gone` without crashing (graceful source-level error handling confirmed)
 
+## Completed: Job-hunt automation pipeline (freelance + full-time + outreach)
+
+Turned LeadGen into a full job-hunt pipeline in one dashboard:
+
+### Backend (`backend/src/hunt.rs`, `db.rs`, `api.rs`, `models.rs`)
+- `Profile`: saved as `settings.profile.*`; used to score leads and personalise outreach. `score_lead_against_profile` → 0–100 fit (skill overlap + remote/location + recency).
+- `generate_outreach` → 3 template-based drafts (freelance proposal, LinkedIn message, email) filled from your profile.
+- LinkedIn OAuth: `linkedin_auth_url` (with state), `exchange_linkedin_code`, `linkedin_me`, `connect_linkedin` (stores token/expiry/member id). Official API only — no password, no scraping.
+- `applications` table + CRUD: add/list/update/delete; auto-stamps stage timestamps, increments follow-up counts, syncs the source lead status, dedupes by lead_id.
+- Routes: `/leads/import` (URL), `/leads/rescore`, `/leads/:id/outreach`, `/applications` CRUD, `/profile` GET/PUT, `/settings/linkedin` GET/PUT, `/linkedin/auth-url|callback|status`.
+
+### Frontend
+- `Applications.tsx` (new page + route + nav): pipeline cards with a saved→applied→replied→interviewed→offered→hired stage stepper, reject/close actions, follow-up logging, and an edit modal (company/contact/next/notes).
+- `Settings.tsx`: added **My profile** section (name/title/email/location/rate/skills/experience/availability/bio/portfolio/linkedin/github) + **LinkedIn connection** section (app config + "Continue with LinkedIn" via `linkedinAuthUrl`).
+- `Leads.tsx`: added **Import URL** modal, **Generate outreach** modal (copy-paste drafts), per-row **Track application** action, plus an Import URL header button.
+- `Badge.tsx`: added tone mappings for indeed/linkedin/facebook/saved/replied/interviewed/offered/hired/rejected/closed.
+- `types.ts`/`api.ts`: new types (Profile, OutreachDraft, Application/New/Cached) and methods for import/rescore/outreach/applications/profile/linkedin.
+
+### Docs
+- Added root `SETUP.md` (LinkedIn OAuth app creation, Indeed notes, running, tests).
+- Updated `README.md` overview + endpoint table + job-hunt pipeline section.
+
+### Verification
+- `cargo test`: **27/27** (Indeed parse/detection, hunt scoring/profile/outreach/LinkedIn URL, applications).
+- `npm run build` (typecheck + vite): green. `npx vitest run`: **19/19**.
+
 ## Remaining gaps (future work)
 
 - No Sepolia deployment yet (needs `.env` — blocked on credentials)
-- Live scraping of job sites is limited by anti-bot measures; runs degrade to source errors. A production deployment should use authenticated sessions, a headless browser, or third-party job APIs/actors for reliable ingestion.
+- Live LinkedIn OAuth / Indeed RSS fetch can't be verified in an offline sandbox (no network/credentials). The flows are verified by tests + typecheck/build; a real LinkedIn app (see `SETUP.md`) is required live.
+- Upwork/Fiverr/Freelancer bot-block scrapers; the app degrades to source errors and users should use **Import URL** / manual leads for those (already supported).
+- LinkedIn OAuth redirect callback is designed to return to `:5173/linkedin/callback`; a small frontend callback handler that posts the `code` to `POST /linkedin/callback` is the remaining nicety (the Settings status endpoint already reflects connection).
 
 ## How to run
 

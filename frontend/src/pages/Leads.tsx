@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
-import { LEAD_STATUSES, SOURCES, type Lead, type NewLead } from "../types";
+import { LEAD_STATUSES, SOURCES, type Lead, type NewLead, type OutreachDraft } from "../types";
 import { joinTags, timeAgo } from "../lib/format";
 import { Badge, displayLabel, statusTone } from "../components/Badge";
 import ScorePill from "../components/ScorePill";
@@ -40,7 +40,9 @@ export default function Leads() {
   const [loading, setLoading] = useState(true);
   const [scraping, setScraping] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [notesLead, setNotesLead] = useState<Lead | null>(null);
+  const [outreachLead, setOutreachLead] = useState<Lead | null>(null);
   const [scrapeOpen, setScrapeOpen] = useState(false);
   const { notify } = useToast();
 
@@ -110,6 +112,15 @@ export default function Leads() {
     }
   };
 
+  const onTrack = async (lead: Lead) => {
+    try {
+      await api.addApplication({ lead_id: lead.id, company: lead.client_name, notes: lead.notes });
+      notify(`"${lead.title}" added to applications`);
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Failed to track application", "error");
+    }
+  };
+
   const onDelete = async (lead: Lead) => {
     if (!window.confirm(`Delete lead "${lead.title}"?`)) return;
     try {
@@ -132,6 +143,9 @@ export default function Leads() {
           <p className="text-sm text-slate-500">Matching jobs from your enabled marketplaces.</p>
         </div>
         <div className="flex gap-2">
+          <Button variant="secondary" size="sm" icon={<Icon name="link" className="h-4 w-4" />} onClick={() => setImportOpen(true)}>
+            Import URL
+          </Button>
           <Button variant="secondary" size="sm" icon={<Icon name="refresh" className="h-4 w-4" />} onClick={() => setScrapeOpen(true)}>
             Scrape
           </Button>
@@ -298,6 +312,22 @@ export default function Leads() {
                       <div className="flex justify-end gap-1">
                         <button
                           className={iconBtnClass}
+                          title="Generate outreach"
+                          onClick={() => setOutreachLead(lead)}
+                        >
+                          <Icon name="send" className="h-4 w-4" />
+                        </button>
+                        {!["won", "lost", "archived"].includes(lead.status) && (
+                          <button
+                            className={iconBtnClass}
+                            title="Track application"
+                            onClick={() => onTrack(lead)}
+                          >
+                            <Icon name="activity" className="h-4 w-4" />
+                          </button>
+                        )}
+                        <button
+                          className={iconBtnClass}
                           title="Edit notes"
                           onClick={() => setNotesLead(lead)}
                         >
@@ -331,6 +361,17 @@ export default function Leads() {
         onClose={() => setScrapeOpen(false)}
         onRun={runScrape}
       />
+
+      <ImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onSaved={() => {
+          setImportOpen(false);
+          void load();
+        }}
+      />
+
+      <OutreachModal lead={outreachLead} onClose={() => setOutreachLead(null)} />
 
       <AddLeadModal
         open={addOpen}
@@ -584,6 +625,148 @@ function AddLeadModal({
             placeholder="What does the client need?"
           />
         </div>
+      </div>
+    </Modal>
+  );
+}
+
+function ImportModal({
+  open,
+  onClose,
+  onSaved,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [url, setUrl] = useState("");
+  const [saving, setSaving] = useState(false);
+  const { notify } = useToast();
+
+  useEffect(() => {
+    if (open) setUrl("");
+  }, [open]);
+
+  const submit = async () => {
+    if (!url.trim()) {
+      notify("Paste a job or gig URL first", "error");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.importLeadUrl(url.trim());
+      notify("Imported — add details and run scoring");
+      onSaved();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Import failed", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={open}
+      title="Import from URL"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button loading={saving} onClick={submit}>
+            Import
+          </Button>
+        </>
+      }
+    >
+      <p className="mb-3 text-sm text-slate-600">
+        Paste any job, gig or client link from Upwork, Indeed, LinkedIn, Fiverr or a Facebook group.
+        The app saves it so you can score it against your profile and generate outreach.
+      </p>
+      <label className="block text-sm font-medium text-slate-700" htmlFor="import-url">
+        URL
+      </label>
+      <input
+        id="import-url"
+        className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        placeholder="https://www.indeed.com/viewjob?jk=…"
+      />
+    </Modal>
+  );
+}
+
+function OutreachModal({
+  lead,
+  onClose,
+}: {
+  lead: Lead | null;
+  onClose: () => void;
+}) {
+  const [drafts, setDrafts] = useState<OutreachDraft[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+  const { notify } = useToast();
+
+  useEffect(() => {
+    if (!lead) return;
+    setDrafts(null);
+    setLoading(true);
+    void api
+      .leadOutreach(lead.id)
+      .then(setDrafts)
+      .catch((e) => notify(e instanceof Error ? e.message : "Failed to generate outreach", "error"))
+      .finally(() => setLoading(false));
+  }, [lead, notify]);
+
+  const copy = async (id: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(id);
+      setTimeout(() => setCopied(null), 1500);
+    } catch {
+      notify("Copy failed", "error");
+    }
+  };
+
+  const mediumLabel = (m: string) =>
+    ({ proposal: "Freelance proposal", linkedin_message: "LinkedIn message", email: "Email" })[m] ?? m;
+
+  return (
+    <Modal open={lead !== null} title="Generated outreach" onClose={onClose}>
+      <div className="space-y-4">
+        {loading && (
+          <div className="grid place-items-center py-8">
+            <Spinner className="h-6 w-6" />
+          </div>
+        )}
+        {drafts?.map((d) => (
+          <div key={d.medium} className="rounded-lg border border-slate-200 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                {mediumLabel(d.medium)}
+              </span>
+              <button
+                onClick={() => copy(d.medium, d.body)}
+                className="text-xs font-medium text-indigo-600 hover:text-indigo-800"
+              >
+                {copied === d.medium ? "Copied" : "Copy"}
+              </button>
+            </div>
+            {d.subject && <p className="mb-1 text-sm font-medium text-slate-700">Subject: {d.subject}</p>}
+            <pre className="whitespace-pre-wrap break-words rounded bg-slate-50 p-3 text-xs leading-relaxed text-slate-700">
+              {d.body}
+            </pre>
+          </div>
+        ))}
+        {lead && !loading && !drafts && (
+          <p className="text-sm text-slate-500">Could not generate outreach for this lead.</p>
+        )}
+        <p className="text-xs text-slate-500">
+          Personalise these drafts and fill your profile (Settings → My profile) for better results.
+        </p>
       </div>
     </Modal>
   );

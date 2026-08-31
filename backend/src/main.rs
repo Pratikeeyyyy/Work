@@ -1,5 +1,6 @@
 mod api;
 mod db;
+mod hunt;
 mod models;
 mod scraper;
 

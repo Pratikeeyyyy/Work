@@ -1,12 +1,12 @@
 # LeadGen
 
-Freelance lead-generation and escrow-management platform. Scrapes gig boards, manages a client pipeline, and protects payments with on-chain ETH escrow.
+All-in-one job-hunt automation: freelance gigs + full-time jobs + client/lead outreach in one dashboard, with lead fit-scoring, auto-drafted outreach, application tracking, and escrow-backed contracts. Protected by official legal sources only — Indeed RSS, LinkedIn OAuth, and manual import — never account/password scraping.
 
 ## Architecture
 
 ```
 contracts/   Solidity + Hardhat     FreelanceEscrow.sol — on-chain escrow
-backend/     Rust + Axum            REST API, SQLite, multi-source scrapers
+backend/     Rust + Axum            REST API, SQLite, multi-source scrapers, scoring + outreach
 frontend/    React + Vite + Tailwind  Dashboard, pipeline, wallet integration
 ```
 
@@ -70,6 +70,26 @@ For Sepolia/mainnet deploy, copy `.env.example` → `.env` and fill in keys.
 | GET/PUT | `/settings/keywords` | Manage scrape keywords |
 | GET/PUT | `/settings/sources` | Manage enabled sources |
 | POST | `/scrape` | Run scrape now |
+| POST | `/leads/import` | Import a job/gig from a pasted URL |
+| POST | `/leads/rescore` | Re-score all leads against your profile |
+| GET | `/leads/:id/outreach` | Generate auto-drafted outreach (proposal / LinkedIn / email) |
+| GET/PUT | `/profile` | Your profile used for scoring + outreach |
+| GET/POST | `/applications` | List / add tracked applications |
+| PATCH/DELETE | `/applications/:id` | Update / delete an application |
+| GET/PUT | `/settings/linkedin` | LinkedIn OAuth app config |
+| GET | `/linkedin/auth-url` | Build LinkedIn OAuth authorize URL |
+| POST | `/linkedin/callback` | Exchange LinkedIn auth code |
+| GET | `/linkedin/status` | LinkedIn connection status |
+
+## Job-hunt pipeline
+
+1. **Gather** — run a scrape (Indeed RSS is reliable; Upwork/Fiverr/Freelancer block bots, so use import or manual) or paste any job/URL into **Import URL**.
+2. **Score** — fill **Settings → My profile** (skills, location, rate) and hit **Rescore** on the Leads page. Leads are ranked 0–100 by skill overlap + location + recency.
+3. **Outreach** — open any lead and **Generate outreach** to get a copy-paste proposal, LinkedIn message, and email drafted from your profile.
+4. **Track** — on any lead, **Track application** promotes it into the Applications page where you move it through saved → applied → replied → interviewed → offered → hired, with follow-up nudges and notes.
+5. **Close** — convert won leads to clients and escrow contracts protect payments.
+
+See `SETUP.md` for LinkedIn OAuth app creation and source notes.
 
 ## Tech stack
 

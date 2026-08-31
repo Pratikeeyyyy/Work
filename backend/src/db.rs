@@ -79,9 +79,30 @@ impl Db {
                 value TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id INTEGER NOT NULL REFERENCES leads(id),
+                client_id INTEGER REFERENCES clients(id),
+                status TEXT NOT NULL DEFAULT 'saved',
+                applied_at TEXT,
+                replied_at TEXT,
+                interviewed_at TEXT,
+                offered_at TEXT,
+                hired_at TEXT,
+                company TEXT,
+                contact TEXT,
+                next_scheduled TEXT,
+                follow_up_count INTEGER NOT NULL DEFAULT 0,
+                last_follow_up TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_app_lead ON applications(lead_id);
+
             INSERT OR IGNORE INTO settings (key, value)
             VALUES ('keywords', 'web development, react, rust, python, blockchain, solidity'),
-                   ('sources', 'upwork,freelancer,fiverr'),
+                   ('sources', 'upwork,freelancer,fiverr,indeed'),
                    ('max_leads_per_run', '100');
             "#,
         )?;
@@ -210,6 +231,15 @@ impl Db {
         conn.execute(
             "UPDATE leads SET notes = ?1 WHERE id = ?2",
             params![notes, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_lead_score(&self, id: i64, score: i64) -> Result<(), rusqlite::Error> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE leads SET score = ?1 WHERE id = ?2",
+            params![score, id],
         )?;
         Ok(())
     }
@@ -395,6 +425,158 @@ impl Db {
         Ok(())
     }
 
+    // ---------- Applications ----------
+
+    pub fn add_application(&self, a: &NewApplication) -> Result<i64, rusqlite::Error> {
+        let conn = self.conn();
+        let existing: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM applications WHERE lead_id = ?1",
+                params![a.lead_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+        conn.execute(
+            "INSERT INTO applications (lead_id, client_id, company, contact, notes)
+             VALUES (?1,?2,?3,?4,?5)",
+            params![a.lead_id, a.client_id, a.company, a.contact, a.notes],
+        )?;
+        // Mark the underlying lead as "applied" so dashboard stats stay in sync.
+        conn.execute(
+            "UPDATE leads SET status = 'applied' WHERE id = ?1",
+            params![a.lead_id],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn list_applications(&self) -> Result<Vec<Application>, rusqlite::Error> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT a.id, a.lead_id, a.client_id, a.status, a.applied_at, a.replied_at,
+                    a.interviewed_at, a.offered_at, a.hired_at, a.company, a.contact,
+                    a.next_scheduled, a.follow_up_count, a.last_follow_up, a.notes, a.created_at,
+                    l.title, l.url, l.source
+             FROM applications a LEFT JOIN leads l ON l.id = a.lead_id
+             ORDER BY COALESCE(a.applied_at, a.created_at) DESC",
+        )?;
+        let rows = stmt.query_map([], app_from_row)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn get_application(&self, id: i64) -> Result<Option<Application>, rusqlite::Error> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT a.id, a.lead_id, a.client_id, a.status, a.applied_at, a.replied_at,
+                    a.interviewed_at, a.offered_at, a.hired_at, a.company, a.contact,
+                    a.next_scheduled, a.follow_up_count, a.last_follow_up, a.notes, a.created_at,
+                    l.title, l.url, l.source
+             FROM applications a LEFT JOIN leads l ON l.id = a.lead_id WHERE a.id = ?1",
+            params![id],
+            app_from_row,
+        )
+        .optional()
+    }
+
+    pub fn update_application(
+        &self,
+        id: i64,
+        u: &ApplicationUpdate,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn();
+        let cur = self.get_application(id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        let status = u.status.clone().unwrap_or_else(|| cur.status.clone());
+
+        let field = |v: &Option<String>| v.clone();
+        let applied_at = field(&u.applied_at).or(cur.applied_at.clone());
+        let replied_at = field(&u.replied_at).or(cur.replied_at.clone());
+        let interviewed_at = field(&u.interviewed_at).or(cur.interviewed_at.clone());
+        let offered_at = field(&u.offered_at).or(cur.offered_at.clone());
+        let hired_at = field(&u.hired_at).or(cur.hired_at.clone());
+        let company = field(&u.company).or(cur.company.clone());
+        let contact = field(&u.contact).or(cur.contact.clone());
+        let next_scheduled = field(&u.next_scheduled).or(cur.next_scheduled.clone());
+        let notes = field(&u.notes).or(cur.notes.clone());
+
+        // When moving to a pipeline stage, stamp the timestamp automatically.
+        let now = chrono::Utc::now().naive_utc().to_string();
+        let applied_at = if status == "applied" && applied_at.is_none() {
+            Some(now.clone())
+        } else {
+            applied_at
+        };
+        let replied_at = if status == "replied" && replied_at.is_none() {
+            Some(now.clone())
+        } else {
+            replied_at
+        };
+        let interviewed_at = if status == "interviewed" && interviewed_at.is_none() {
+            Some(now.clone())
+        } else {
+            interviewed_at
+        };
+        let offered_at = if status == "offered" && offered_at.is_none() {
+            Some(now.clone())
+        } else {
+            offered_at
+        };
+        let hired_at = if status == "hired" && hired_at.is_none() {
+            Some(now.clone())
+        } else {
+            hired_at
+        };
+
+        let follow_up_count = if u.follow_up {
+            cur.follow_up_count + 1
+        } else {
+            cur.follow_up_count
+        };
+        let last_follow_up = if u.follow_up {
+            Some(now.clone())
+        } else {
+            cur.last_follow_up.clone()
+        };
+
+        conn.execute(
+            "UPDATE applications SET status=?1, applied_at=?2, replied_at=?3, interviewed_at=?4,
+                    offered_at=?5, hired_at=?6, company=?7, contact=?8, next_scheduled=?9,
+                    notes=?10, follow_up_count=?11, last_follow_up=?12 WHERE id=?13",
+            params![
+                status,
+                applied_at,
+                replied_at,
+                interviewed_at,
+                offered_at,
+                hired_at,
+                company,
+                contact,
+                next_scheduled,
+                notes,
+                follow_up_count,
+                last_follow_up,
+                id
+            ],
+        )?;
+        // Sync the lead status with the application stage.
+        conn.execute(
+            "UPDATE leads SET status = ?1 WHERE id = ?2",
+            params![status, cur.lead_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_application(&self, id: i64) -> Result<(), rusqlite::Error> {
+        let conn = self.conn();
+        conn.execute("DELETE FROM applications WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     // ---------- Settings ----------
 
     pub fn get_setting(&self, key: &str) -> Option<String> {
@@ -473,6 +655,9 @@ impl Db {
             total_clients: one("SELECT COUNT(*) FROM clients"),
             active_clients: one("SELECT COUNT(*) FROM clients WHERE status != 'archived'"),
             total_contracts: one("SELECT COUNT(*) FROM contracts"),
+            total_applications: one("SELECT COUNT(*) FROM applications"),
+            interviewed: one("SELECT COUNT(*) FROM applications WHERE status IN ('interviewed','offered','hired')"),
+            hired: one("SELECT COUNT(*) FROM applications WHERE status = 'hired'"),
             by_source,
             top_technologies,
         })
@@ -537,6 +722,30 @@ fn contract_from_row(row: &rusqlite::Row) -> rusqlite::Result<Contract> {
         deployed_at: row.get(10)?,
         notes: row.get(11)?,
         created_at: row.get(12)?,
+    })
+}
+
+fn app_from_row(row: &rusqlite::Row) -> rusqlite::Result<Application> {
+    Ok(Application {
+        id: row.get(0)?,
+        lead_id: row.get(1)?,
+        client_id: row.get(2)?,
+        status: row.get(3)?,
+        applied_at: row.get(4)?,
+        replied_at: row.get(5)?,
+        interviewed_at: row.get(6)?,
+        offered_at: row.get(7)?,
+        hired_at: row.get(8)?,
+        company: row.get(9)?,
+        contact: row.get(10)?,
+        next_scheduled: row.get(11)?,
+        follow_up_count: row.get(12)?,
+        last_follow_up: row.get(13)?,
+        notes: row.get(14)?,
+        created_at: row.get(15)?,
+        lead_title: row.get(16)?,
+        lead_url: row.get(17)?,
+        lead_source: row.get(18)?,
     })
 }
 

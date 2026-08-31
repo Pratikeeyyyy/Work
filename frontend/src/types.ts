@@ -10,7 +10,18 @@ export const LEAD_STATUSES = [
 
 export const CLIENT_STATUSES = ["active", "inactive", "blacklisted"] as const;
 
-export const SOURCES = ["upwork", "freelancer", "fiverr", "manual"] as const;
+export const SOURCES = ["upwork", "freelancer", "fiverr", "indeed", "linkedin", "facebook", "manual"] as const;
+
+export const APPLICATION_STATUSES = [
+  "saved",
+  "applied",
+  "replied",
+  "interviewed",
+  "offered",
+  "hired",
+  "rejected",
+  "closed",
+] as const;
 
 export interface Lead {
   id: number;
@@ -115,6 +126,9 @@ export interface Stats {
   total_clients: number;
   active_clients: number;
   total_contracts: number;
+  total_applications: number;
+  interviewed: number;
+  hired: number;
   by_source: { source: string; count: number }[];
   top_technologies: { tech: string; count: number }[];
 }
@@ -130,3 +144,68 @@ export interface ApiMessage {
 }
 
 export type KeywordSetting = { keywords: string[] };
+
+export interface Application {
+  id: number;
+  lead_id: number;
+  client_id: number | null;
+  status: string;
+  applied_at: string | null;
+  replied_at: string | null;
+  interviewed_at: string | null;
+  offered_at: string | null;
+  hired_at: string | null;
+  company: string | null;
+  contact: string | null;
+  next_scheduled: string | null;
+  follow_up_count: number;
+  last_follow_up: string | null;
+  notes: string | null;
+  created_at: string;
+  lead_title: string | null;
+  lead_url: string | null;
+  lead_source: string | null;
+}
+
+export interface NewApplication {
+  lead_id: number;
+  client_id?: number | null;
+  company?: string | null;
+  contact?: string | null;
+  notes?: string | null;
+}
+
+export interface ApplicationUpdate {
+  status?: string;
+  applied_at?: string | null;
+  replied_at?: string | null;
+  interviewed_at?: string | null;
+  offered_at?: string | null;
+  hired_at?: string | null;
+  company?: string | null;
+  contact?: string | null;
+  next_scheduled?: string | null;
+  notes?: string | null;
+  follow_up: boolean;
+}
+
+export interface Profile {
+  name: string | null;
+  title: string | null;
+  email: string | null;
+  location: string | null;
+  rate: string | null;
+  skills: string[];
+  experience: string | null;
+  availability: string | null;
+  bio: string | null;
+  portfolio: string | null;
+  linkedin: string | null;
+  github: string | null;
+}
+
+export interface OutreachDraft {
+  medium: string;
+  subject: string | null;
+  body: string;
+}

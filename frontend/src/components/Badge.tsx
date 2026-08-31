@@ -34,10 +34,20 @@ const STATUS_TONE: Record<string, Tone> = {
   upwork: "sky",
   freelancer: "violet",
   fiverr: "emerald",
+  indeed: "indigo",
+  linkedin: "violet",
+  facebook: "sky",
   manual: "slate",
+  saved: "slate",
+  replied: "violet",
+  interviewed: "indigo",
+  hired: "emerald",
+  offered: "amber",
+  rejected: "rose",
+  closed: "slate",
 };
 
-const uppercase = new Set(["upwork", "fiverr", "manual"]);
+const uppercase = new Set(["upwork", "fiverr", "manual", "linkedin"]);
 
 export function Badge({
   tone = "slate",

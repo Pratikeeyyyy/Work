@@ -5,6 +5,7 @@ import WalletButton from "./WalletButton";
 const NAV = [
   { to: "/", label: "Dashboard", icon: "dashboard", end: true },
   { to: "/leads", label: "Leads", icon: "leads", end: false },
+  { to: "/applications", label: "Applications", icon: "activity", end: false },
   { to: "/clients", label: "Clients", icon: "clients", end: false },
   { to: "/contracts", label: "Contracts", icon: "contracts", end: false },
   { to: "/settings", label: "Settings", icon: "settings", end: false },

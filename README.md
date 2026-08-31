@@ -51,11 +51,27 @@ npm run deploy:local   # deploy to local Hardhat node
 
 For Sepolia/mainnet deploy, copy `.env.example` → `.env` and fill in keys.
 
+## Auth
+
+The app is single-user. All business endpoints require a bearer token (`Authorization: Bearer <token>`). The first time you run the server you either set `APP_PASSWORD` (recommended) or create a password once via `/auth/setup`; then log in to get a token (7-day session). See `SETUP.md`.
+
 ## API endpoints
+
+Public (no auth):
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check |
+| GET | `/auth/status` | Auth status (`hasPassword`, `authenticated`) |
+| POST | `/auth/setup` | Create the single-user password (simplified setup) |
+| POST | `/login` | Log in with password → returns session token |
+| POST | `/auth/logout` | Invalidate current session |
+
+Protected (require `Authorization: Bearer <token>`):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/stats` | Dashboard stats |
 | GET | `/stats` | Dashboard stats |
 | GET/POST | `/leads` | List / create leads |
 | GET/DELETE | `/leads/:id` | Get / delete a lead |

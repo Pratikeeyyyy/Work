@@ -1,15 +1,27 @@
+use crate::auth;
 use crate::db::Db;
 use crate::hunt;
 use crate::models::*;
 use crate::scraper;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, Request, State};
+use axum::http::StatusCode;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 
 pub fn router(db: Db) -> Router {
-    Router::new()
+    // Public routes: health check, login, first-run password setup.
+    let public = Router::new()
         .route("/health", get(health))
+        .route("/login", post(login))
+        .route("/auth/setup", post(setup_auth))
+        .route("/auth/logout", post(logout))
+        .route("/auth/status", get(auth_status));
+
+    // Everything else requires a valid bearer token.
+    let protected = Router::new()
         .route("/stats", get(stats))
         .route("/leads", get(list_leads).post(add_lead))
         .route("/leads/import", post(import_lead_url))
@@ -34,7 +46,101 @@ pub fn router(db: Db) -> Router {
         .route("/settings/sources", get(get_sources).put(put_sources))
         .route("/settings/linkedin", get(get_linkedin_settings).put(put_linkedin_settings))
         .route("/scrape", post(scrape))
-        .with_state(db)
+        .layer(middleware::from_fn(auth_middleware));
+
+    public.merge(protected).with_state(db)
+}
+
+/// Reject requests that do not carry a valid bearer token. Preflight (CORS)
+/// and the public routes are let through.
+async fn auth_middleware(req: Request, next: Next) -> Response {
+    let method = req.method().clone();
+    if method == axum::http::Method::OPTIONS {
+        return next.run(req).await;
+    }
+    let authorized = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(auth::is_valid_token)
+        .unwrap_or(false);
+    if authorized {
+        next.run(req).await
+    } else {
+        (StatusCode::UNAUTHORIZED, "unauthorized".to_string()).into_response()
+    }
+}
+
+#[derive(Deserialize)]
+pub struct LoginRequest {
+    pub password: String,
+}
+
+async fn auth_status(
+    State(db): State<Db>,
+    req: Request,
+) -> Json<serde_json::Value> {
+    let has_password = auth::is_password_set(&db);
+    let authenticated = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(auth::is_valid_token)
+        .unwrap_or(false);
+    Json(serde_json::json!({
+        "authenticated": authenticated,
+        "hasPassword": has_password,
+    }))
+}
+
+async fn login(State(db): State<Db>, Json(req): Json<LoginRequest>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !auth::is_password_set(&db) {
+        return Err((
+            StatusCode::PRECONDITION_FAILED,
+            "No password configured. Set the APP_PASSWORD environment variable, or POST /auth/setup once to create one.".into(),
+        ));
+    }
+    if auth::authenticate(&db, &req.password) {
+        let token = auth::create_session();
+        Ok(Json(serde_json::json!({ "token": token })))
+    } else {
+        Err((StatusCode::UNAUTHORIZED, "invalid password".into()))
+    }
+}
+
+#[derive(Deserialize)]
+pub struct SetupAuthRequest {
+    pub password: String,
+}
+
+/// Set the initial password (first run). Only allowed when no password is
+/// configured yet. Call from the frontend with a strong password.
+async fn setup_auth(State(db): State<Db>, Json(req): Json<SetupAuthRequest>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if auth::is_password_set(&db) {
+        return Err((StatusCode::CONFLICT, "a password is already configured".into()));
+    }
+    if req.password.len() < 8 {
+        return Err((StatusCode::BAD_REQUEST, "password must be at least 8 characters".into()));
+    }
+    auth::set_password(&db, &req.password)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "failed to set password".into()))?;
+    // Auto-login after setup.
+    let token = auth::create_session();
+    Ok(Json(serde_json::json!({ "message": "password set", "token": token })))
+}
+
+async fn logout(req: Request) -> Response {
+    if let Some(tok) = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    {
+        auth::revoke_session(tok);
+    }
+    (StatusCode::OK, "logged out").into_response()
 }
 
 async fn health() -> &'static str {
@@ -304,25 +410,37 @@ pub struct DeployRequest {
 async fn deploy_contract(
     State(db): State<Db>,
     Path(id): Path<i64>,
-    body: Option<Json<DeployRequest>>,
+    Json(body): Json<DeployRequest>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
-    // When the frontend deploys contracts/FreelanceEscrow.sol from a wallet it
-    // sends back the real tx hash + deployed address. Without a body we fall back
-    // to a stub hash so the flow is still demoable offline.
+    // A real on-chain deployment is required: both the transaction hash and the
+    // deployed contract address must be supplied by the wallet that sends the
+    // deployment transaction. There is intentionally no demo/stub fallback.
+    let tx_hash = body
+        .tx_hash
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let contract_address = body
+        .contract_address
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if tx_hash.len() < 2 || !tx_hash.starts_with("0x") {
+        return Err((axum::http::StatusCode::BAD_REQUEST, "a valid tx_hash (0x…) is required".into()));
+    }
+    if contract_address.len() < 2 || !contract_address.starts_with("0x") {
+        return Err((axum::http::StatusCode::BAD_REQUEST, "a contract_address (0x…) is required".into()));
+    }
     let contracts = db.list_contracts().map_err(rusqlite_err)?;
     if !contracts.iter().any(|c| c.id == id) {
         return Err((axum::http::StatusCode::NOT_FOUND, "contract not found".into()));
     }
-    let tx_hash = body
-        .as_ref()
-        .and_then(|b| b.tx_hash.clone())
-        .filter(|h| !h.trim().is_empty())
-        .unwrap_or_else(|| format!("0x{:x}", rand::random::<u64>().max(1)));
-    let contract_address = body.as_ref().and_then(|b| b.contract_address.clone());
-    db.update_contract_deployment(id, "deployed", &tx_hash, contract_address.as_deref())
+    db.update_contract_deployment(id, "deployed", &tx_hash, Some(&contract_address))
         .map_err(rusqlite_err)?;
     Ok(Json(ApiMessage {
-        message: format!("Escrow deployed. tx hash: {tx_hash}."),
+        message: "Escrow deployment recorded.".into(),
     }))
 }
 

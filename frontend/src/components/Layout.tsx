@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { Icon } from "./Icon";
 import WalletButton from "./WalletButton";
+import { api, auth } from "../api";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: "dashboard", end: true },
@@ -53,6 +54,16 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 export default function Layout() {
+  const onLogout = async () => {
+    try {
+      await api.logout();
+    } catch {
+      // Even if the server call fails, clear the local session.
+    }
+    auth.clearToken();
+    window.location.reload();
+  };
+
   return (
     <div className="min-h-screen lg:flex">
       <aside className="hidden w-60 shrink-0 flex-col bg-slate-900 lg:flex">
@@ -62,8 +73,15 @@ export default function Layout() {
         <div className="flex-1 overflow-y-auto px-4 py-5">
           <NavItems />
         </div>
-        <div className="border-t border-slate-800 px-4 py-4">
+        <div className="space-y-2 border-t border-slate-800 px-4 py-4">
           <WalletButton variant="dark" />
+          <button
+            onClick={onLogout}
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-800 hover:text-white"
+          >
+            <Icon name="close" className="h-4 w-4 shrink-0" />
+            <span>Log out</span>
+          </button>
         </div>
       </aside>
 
@@ -71,8 +89,15 @@ export default function Layout() {
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/85 backdrop-blur lg:hidden">
           <div className="flex items-center gap-3 px-4 py-3">
             <Brand compact />
-            <div className="ml-auto">
+            <div className="ml-auto flex items-center gap-2">
               <WalletButton variant="light" />
+              <button
+                onClick={onLogout}
+                aria-label="Log out"
+                className="grid h-9 w-9 place-items-center rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
+              >
+                <Icon name="close" className="h-4 w-4" />
+              </button>
             </div>
           </div>
           <div className="px-4 pb-2.5">

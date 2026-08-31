@@ -18,15 +18,44 @@ import type {
 
 const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
 
+const TOKEN_KEY = "leadgen_token";
+
+function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+/** Notifies the app (e.g. to show the login screen) when auth expires. */
+function emitUnauthorized() {
+  window.dispatchEvent(new Event("leadgen:unauthorized"));
+}
+
+export const auth = {
+  getToken,
+  setToken(token: string) {
+    localStorage.setItem(TOKEN_KEY, token);
+  },
+  clearToken() {
+    localStorage.removeItem(TOKEN_KEY);
+  },
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  const token = getToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
   let res: Response;
   try {
-    res = await fetch(`${BASE}${path}`, {
-      headers: { "Content-Type": "application/json" },
-      ...init,
-    });
+    res = await fetch(`${BASE}${path}`, { ...init, headers });
   } catch {
     throw new Error("Cannot reach the backend. Is `cargo run` server running on :8080?");
+  }
+  if (res.status === 401 && !path.startsWith("/login") && !path.startsWith("/auth/setup")) {
+    auth.clearToken();
+    emitUnauthorized();
   }
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
@@ -44,6 +73,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  login: (password: string) =>
+    request<{ token: string }>("/login", { method: "POST", body: JSON.stringify({ password }) }),
+  setup: (password: string) =>
+    request<{ token: string; message?: string }>("/auth/setup", {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    }),
+  logout: () => request<{ message?: string }>("/auth/logout", { method: "POST" }),
+  authStatus: () => request<{ authenticated: boolean; hasPassword: boolean }>("/auth/status"),
+
   stats: () => request<Stats>("/stats"),
 
   listLeads(params?: { source?: string; status?: string; q?: string; limit?: number }) {

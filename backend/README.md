@@ -23,6 +23,8 @@ Serves on `:8080` (override with `BIND` env var). Creates `leadgen.db` on first 
 |----------|---------|-------------|
 | `BIND` | `0.0.0.0:8080` | Listen address |
 | `DATABASE_PATH` | `leadgen.db` | SQLite file path |
+| `APP_PASSWORD` | *(empty)* | Optional. Single-user password. When set, login uses it and the DB-stored password is ignored. Recommended for Render (survives DB reset). |
+| `CORS_ORIGIN` | `http://localhost:5173` | Allowed frontend origin (comma-separated allowed) |
 
 ## Tests
 
@@ -36,6 +38,7 @@ Covers the three scrapers (upwork, freelancer, fiverr) and the database layer
 ## Architecture
 
 - `main.rs` — HTTP server bootstrap, tracing, CORS
+- `auth.rs` — single-user auth: PBKDF2 password hashing, in-memory sessions, middleware
 - `api.rs` — all REST route handlers
 - `db.rs` — SQLite schema, migrations, queries
 - `models.rs` — serde structs shared across the API and DB layers

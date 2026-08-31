@@ -17,6 +17,29 @@ npm run dev
 
 Open http://localhost:5173.
 
+## Single-user authentication (required)
+
+LeadGen is a single-user app. Before it serves business data it verifies you're you. Passwords are **never stored in plaintext** — they're hashed with PBKDF2-HMAC-SHA256 (280k iterations, random salt). Tokens are opaque random strings held in memory (7-day TTL) and invalidated on server restart.
+
+There are two ways to configure the password:
+
+**Option A – `APP_PASSWORD` env var (recommended).** Set it before starting the backend. This survives database resets, which is important on Render's free tier where SQLite is wiped on redeploy.
+
+```bash
+# Windows (PowerShell)
+$env:APP_PASSWORD="a-strong-phrase"
+cd backend; cargo run
+
+# macOS / Linux
+APP_PASSWORD="a-strong-phrase" cargo run
+```
+
+**Option B – one-time setup endpoint.** If `APP_PASSWORD` is not set, visit the app's **Setup** screen (shown automatically when no password is configured) and create a password. On success you're issued a session immediately. The password is stored (hashed) in SQLite, so it is lost if the database is reset.
+
+Then just **log in** with that password. Sessions last 7 days.
+
+> If you use a database but forget the password, delete the DB (or set `APP_PASSWORD`) to reset — there is no account-recovery bypass.
+
 ## Sources and why
 
 | Source | Method | Notes |
@@ -60,7 +83,7 @@ On any lead, click **Track application** to add it to the Applications page, the
 ## Tests
 
 ```bash
-cd backend && cargo test        # 27 tests
+cd backend && cargo test        # 31 tests
 cd frontend && npx vitest run   # 19 tests
 cd contracts && npm run test    # escrow
 ```

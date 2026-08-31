@@ -169,3 +169,50 @@ fn currency_name(code: &str) -> String {
         other => other.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_projects_json() {
+        let body = r#"{
+          "projects": {
+            "123": {
+              "title": "Build a python scraper",
+              "description": "<p>Need robust scraping</p>",
+              "job_url": "build-python-scraper",
+              "budget": { "minimum": 250, "maximum": 750, "currency": "USD" },
+              "skills": [ { "name": "Python" }, { "name": "Scraping" } ],
+              "owner": { "country": { "name": "United States" }, "username": "john_doe" },
+              "time_submitted": 1700000000
+            },
+            "124": {
+              "title": "Rust API",
+              "job_url": "rust-api",
+              "budget": { "minimum": 100, "maximum": 100, "currency": "US" },
+              "owner": { "username": "rust_dev" }
+            }
+          }
+        }"#;
+        let leads = parse(body).unwrap();
+        assert_eq!(leads.len(), 2);
+        assert_eq!(leads[0].source, "freelancer");
+        assert!(leads[0].url.contains("build-python-scraper-123"));
+        assert_eq!(leads[0].budget_min, Some(250.0));
+        assert_eq!(leads[0].budget_max, Some(750.0));
+        assert_eq!(leads[0].location.as_deref(), Some("United States"));
+        assert_eq!(leads[0].client_name.as_deref(), Some("john doe"));
+        assert_eq!(leads[1].currency.as_deref(), Some("USD"));
+    }
+
+    #[test]
+    fn no_projects_returns_empty() {
+        assert!(parse(r#"{"projects":{}}"#).unwrap().is_empty());
+    }
+
+    #[test]
+    fn strips_tags() {
+        assert_eq!(strip_tags("<p>a</p> <b>b</b>"), "a   b");
+    }
+}

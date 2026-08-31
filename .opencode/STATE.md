@@ -42,12 +42,27 @@
 - `components/Badge.tsx`: added `in_progress` (violet), `submitted` (amber) tones
 - `pages/Contracts.tsx`: on-chain state loader, `EscrowActions` role/state-aware buttons, `OnChainInfo` panel, `DisputeModal` (mediator split)
 
+## Completed: Fiverr scraper + backend tests
+
+### Fiverr scraper (`backend/src/scraper/fiverr.rs`)
+- Rewrote `extract_json_blob` placeholder into a real `__NEXT_DATA__` parser:
+  - `extract_next_data()` — pulls JSON from `<script id="__NEXT_DATA__">`
+  - `parse_next_data()` — reads `props.pageProps.searchResults|gigResults|gigs|results` plus a defensive recursive array scan
+  - `gig_to_lead()` — maps title, seller url, starting price, tags/tech, description
+  - Kept the regex fallback for when the JSON payload is absent or blocked
+- Note: Fiverr returns an anti-bot challenge ("It needs a human touch") to non-browser requests, so live parsing can't be verified end-to-end; the parser is validated by unit tests with realistic fixtures and still degrades gracefully to the regex fallback.
+
+### Backend tests (`cargo test`, 14 passing)
+- `scraper/fiverr.rs`: 4 tests (extract+parse, regex fallback, url building, empty input)
+- `scraper/upwork.rs`: 3 tests (RSS parse, empty skip, html stripping)
+- `scraper/freelancer.rs`: 3 tests (JSON projects parse, empty, tag stripping)
+- `db.rs`: 4 tests (insert+dedupe, scoring, contract status update, settings roundtrip)
+
 ## Other known gaps (future work)
 
-- Fiverr scraper `__NEXT_DATA__` parser is a placeholder
-- No Sepolia deployment yet
-- No backend or frontend tests
-- No README for individual components
+- No Sepolia deployment yet (needs `.env` — blocked on credentials)
+- No frontend tests
+- No README for individual components (root README exists)
 
 ## How to run
 

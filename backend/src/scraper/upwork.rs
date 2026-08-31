@@ -166,3 +166,43 @@ fn truncate(s: &str, max: usize) -> String {
         t
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_rss_items() {
+        let rss = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+<channel>
+  <title>Upwork</title>
+  <item>
+    <title>Build a react dashboard (Budget: $1500, Location: USA)</title>
+    <link>https://www.upwork.com/jobs/~01abc</link>
+    <description><![CDATA[<p>Need a responsive dashboard in React + Tailwind.</p>]]></description>
+    <category>React</category>
+    <category>Python</category>
+  </item>
+</channel>
+</rss>"#;
+        let leads = parse(rss).unwrap();
+        assert_eq!(leads.len(), 1);
+        assert_eq!(leads[0].source, "upwork");
+        assert!(leads[0].budget.as_deref().unwrap_or("").contains("$1500"));
+        assert_eq!(leads[0].location.as_deref(), Some("USA"));
+        assert!(leads[0].technologies.as_deref().unwrap_or("").contains("React"));
+        assert!(!leads[0].description.contains("<p>"));
+    }
+
+    #[test]
+    fn skips_empty_items() {
+        let rss = r#"<rss><channel><item><title></title></item></channel></rss>"#;
+        assert!(parse(rss).unwrap().is_empty());
+    }
+
+    #[test]
+    fn strips_html_entities() {
+        assert_eq!(strip_html("<p>A &amp; B &#39;C&#39;</p>"), "A & B 'C'");
+    }
+}

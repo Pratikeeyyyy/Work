@@ -587,3 +587,95 @@ fn parse_budget_number(budget: &str) -> Option<f64> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_db() -> Db {
+        Db::new(":memory:").expect("in-memory db")
+    }
+
+    fn sample_lead() -> NewLead {
+        NewLead {
+            source: "upwork".into(),
+            title: "Build a react dashboard".into(),
+            description: "Need a responsive dashboard".into(),
+            url: "https://upwork.com/jobs/~test".into(),
+            budget: Some("$500 - $1500".into()),
+            budget_min: Some(500.0),
+            budget_max: Some(1500.0),
+            currency: Some("USD".into()),
+            location: Some("USA".into()),
+            technologies: Some("React".into()),
+            client_name: Some("Acme".into()),
+            posted_date: None,
+        }
+    }
+
+    #[test]
+    fn inserts_and_dedupes_leads_by_url() {
+        let db = test_db();
+        assert!(db.insert_lead(&sample_lead()).unwrap());
+        // Same URL -> not inserted again.
+        assert!(!db.insert_lead(&sample_lead()).unwrap());
+        assert_eq!(db.list_leads(None, None, None, 100).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn scores_leads() {
+        let l = sample_lead();
+        assert!(score_lead(&l) > 0);
+        let empty = NewLead {
+            budget: None,
+            budget_min: None,
+            budget_max: None,
+            client_name: None,
+            location: None,
+            technologies: None,
+            ..sample_lead()
+        };
+        assert_eq!(score_lead(&empty), 0);
+    }
+
+    #[test]
+    fn contract_status_update() {
+        let db = test_db();
+        let client = NewClient {
+            lead_id: None,
+            name: "Alice".into(),
+            email: None,
+            company: None,
+            country: None,
+            website: None,
+            whatsapp: None,
+            source: None,
+            linkedin: None,
+            past_work: None,
+            preferences: None,
+        };
+        let client_id = db.insert_client(&client).unwrap();
+        let c = NewContract {
+            client_id,
+            client_address: Some("0xclient".into()),
+            freelancer_address: Some("0xfreelancer".into()),
+            contract_address: None,
+            title: "Milestone 1".into(),
+            amount_wei: Some("1000000000000000000".into()),
+            currency: "ETH".into(),
+            notes: None,
+        };
+        let id = db.insert_contract(&c).unwrap();
+        db.update_contract_status(id, "funded").unwrap();
+        let contracts = db.list_contracts().unwrap();
+        assert_eq!(contracts[0].status, "funded");
+    }
+
+    #[test]
+    fn settings_roundtrip_and_defaults() {
+        let db = test_db();
+        assert!(!db.get_keywords().is_empty());
+        db.set_setting("keywords", "rust, solidity").unwrap();
+        assert_eq!(db.get_keywords(), vec!["rust".to_string(), "solidity".to_string()]);
+    }
+}

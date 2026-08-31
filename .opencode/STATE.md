@@ -58,11 +58,20 @@
 - `scraper/freelancer.rs`: 3 tests (JSON projects parse, empty, tag stripping)
 - `db.rs`: 4 tests (insert+dedupe, scoring, contract status update, settings roundtrip)
 
-## Other known gaps (future work)
+## Completed: Frontend tests + component READMEs
+
+### Frontend tests (`npm run test`, 19 passing via Vitest + RTL)
+- `lib/format.test.ts` — formatWei, shortAddress, joinTags, timeAgo
+- `lib/escrow.test.ts` — explorerUrl builders
+- `components/Badge.test.tsx` — render + statusTone/displayLabel
+- Setup: `src/test/setup.ts` with jsdom env, `test` script in package.json
+
+### Component READMEs
+- `backend/README.md`, `frontend/README.md`, `contracts/README.md`
+
+## Remaining gaps (future work)
 
 - No Sepolia deployment yet (needs `.env` — blocked on credentials)
-- No frontend tests
-- No README for individual components (root README exists)
 
 ## How to run
 

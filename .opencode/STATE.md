@@ -128,7 +128,19 @@ Turned LeadGen into a full job-hunt pipeline in one dashboard:
 - No Sepolia deployment yet (needs `.env` — blocked on credentials)
 - Live LinkedIn OAuth / Indeed RSS fetch can't be verified in an offline sandbox (no network/credentials). The flows are verified by tests + typecheck/build; a real LinkedIn app (see `SETUP.md`) is required live.
 - Upwork/Fiverr/Freelancer bot-block scrapers; the app degrades to source errors and users should use **Import URL** / manual leads for those (already supported).
-- LinkedIn OAuth redirect callback is designed to return to `:5173/linkedin/callback`; a small frontend callback handler that posts the `code` to `POST /linkedin/callback` is the remaining nicety (the Settings status endpoint already reflects connection).
+- LinkedIn OAuth redirect callback is designed to return to `:5173/linkedin/callback`; the frontend callback handler now exchanges the code and redirects to Settings.
+- **SQLite persistence on Render free tier**: free web services have an ephemeral filesystem — data resets on redeploy. Documented in `DEPLOY.md`; attach a Render Disk (paid) or migrate to Postgres for persistence.
+
+## Completed: Deploy prep (Render + Sepolia path)
+
+Machine-readable deploy config is now in place; the only remaining steps require the user's GitHub/Render/wallet accounts (not available in the sandbox).
+
+- **`render.yaml`** (Render Blueprint): `leadgen-api` web service (`runtime: docker`, `rootDir: backend`, health check `/health`, PORT/BIND/DATABASE_PATH/CORS_ORIGIN/LinkedIn env vars) + `leadgen-web` static site (`rootDir: frontend`, `npm ci && npm run build`, `dist/`, `VITE_API_URL`).
+- **`backend/Dockerfile`**: multi-stage Rust 1.97 → debian-slim runtime, `ca-certificates`, `DATABASE_PATH=/app/data/leadgen.db`, exposes 8080. `backend/.dockerignore` excludes `target/` + db files.
+- **Backend `main.rs`**: reads `PORT` (Render convention) with `BIND` fallback; CORS restricted via optional comma-separated `CORS_ORIGIN` env (defaults to allow-any for local dev). `cargo test` still 27/27.
+- **Frontend**: production build verified with `VITE_API_URL` (URL confirmed embedded in bundle); `npm run build` + `npx vitest run` 19/19 green.
+- **`DEPLOY.md`**: full walkthrough — Render Blueprint steps, env vars to set, SQLite persistence caveat, Sepolia contract deploy (`npm run deploy:sepolia`), and free domain options (onrender subdomain / free TLD + CNAME).
+- **Contracts**: hardhat `sepolia` network + `deploy:sepolia` script already present; compile verified. Deploy needs user `.env` (SEPOLIA_RPC_URL + PRIVATE_KEY + funded wallet).
 
 ## How to run
 

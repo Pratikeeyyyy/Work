@@ -1,0 +1,50 @@
+# Render Blueprint — deploys both services to Render free tier via
+# https://render.com/docs/blueprint-spec. Connect this repo (github.com/Pratikeeyyyy/Work)
+# to Render and it provisions the two services below automatically.
+
+services:
+  # --- Backend: Rust/Axum web service (Docker) ---
+  - type: web
+    name: leadgen-api
+    runtime: docker
+    repo: https://github.com/Pratikeeyyyy/Work.git
+    rootDir: backend
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: BIND
+        value: 0.0.0.0:8080
+      - key: DATABASE_PATH
+        value: /app/data/leadgen.db
+      # Comma-separated allowed CORS origins (your frontend URL). Leave empty to allow any.
+      - key: CORS_ORIGIN
+        sync: false
+      # Optional: LinkedIn OAuth app (see SETUP.md). Client secret stays in Render's dashboard.
+      - key: LINKEDIN_CLIENT_ID
+        sync: false
+      - key: LINKEDIN_CLIENT_SECRET
+        sync: false
+    # NOTE: Free web services have an ephemeral filesystem — SQLite resets on every
+    # redeploy/restart. For persistent data, attach a Render Disk via the dashboard
+    # (billed separately), or switch DATABASE_PATH to a mounted disk path.
+    # disk:
+    #   name: leadgen-data
+    #   mountPath: /app/data
+    #   sizeGB: 1
+
+  # --- Frontend: React static site ---
+  - type: web
+    name: leadgen-web
+    runtime: static
+    repo: https://github.com/Pratikeeyyyy/Work.git
+    rootDir: frontend
+    plan: free
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      # Must be the public URL of the leadgen-api service, e.g.
+      # https://leadgen-api.onrender.com  (set in the Render dashboard)
+      - key: VITE_API_URL
+        sync: false

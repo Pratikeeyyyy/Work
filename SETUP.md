@@ -79,7 +79,7 @@ On any lead, click **Track application** to add it to the Applications page, the
 ## Tests
 
 ```bash
-cd backend && cargo test        # 45 tests
-cd frontend && npx vitest run   # 19 tests
+cd backend && cargo test        # 48 tests
+cd frontend && npx vitest run   # 26 tests
 cd contracts && npm run test    # escrow
 ```

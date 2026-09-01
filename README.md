@@ -72,7 +72,6 @@ Protected (require `Authorization: Bearer <token>`):
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/stats` | Dashboard stats |
-| GET | `/stats` | Dashboard stats |
 | GET/POST | `/leads` | List / create leads |
 | POST | `/leads/import` | Import a job/gig from a pasted URL |
 | POST | `/leads/rescore` | Re-score all leads against your profile |
@@ -92,9 +91,6 @@ Protected (require `Authorization: Bearer <token>`):
 | GET/PUT | `/settings/keywords` | Manage scrape keywords |
 | GET/PUT | `/settings/sources` | Manage enabled sources |
 | POST | `/scrape` | Run scrape now |
-| POST | `/leads/import` | Import a job/gig from a pasted URL |
-| POST | `/leads/rescore` | Re-score all leads against your profile |
-| GET | `/leads/:id/outreach` | Generate auto-drafted outreach (proposal / LinkedIn / email) |
 | GET/PUT | `/profile` | Your profile used for scoring + outreach |
 | GET/POST | `/applications` | List / add tracked applications |
 | GET | `/applications/due` | Applications due for a follow-up |

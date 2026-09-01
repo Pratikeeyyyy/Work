@@ -41,7 +41,7 @@ export const auth = {
   },
 };
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, timeoutMs = 20000): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(init?.headers as Record<string, string> | undefined),
@@ -49,11 +49,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let res: Response;
   try {
-    res = await fetch(`${BASE}${path}`, { ...init, headers });
+    res = await fetch(`${BASE}${path}`, { ...init, headers, signal: controller.signal });
   } catch {
+    if (controller.signal.aborted) {
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
     throw new Error("Cannot reach the backend. Is `cargo run` server running on :8080?");
+  } finally {
+    clearTimeout(timer);
   }
   if (res.status === 401 && !path.startsWith("/login") && !path.startsWith("/register")) {
     auth.clearToken();
@@ -171,7 +178,11 @@ export const api = {
     }),
 
   scrape: (body: { sources?: string[]; keywords?: string[] } = {}) =>
-    request<ScrapeResponse>("/scrape", { method: "POST", body: JSON.stringify(body) }),
+    request<ScrapeResponse>(
+      "/scrape",
+      { method: "POST", body: JSON.stringify(body) },
+      240_000,
+    ),
 
   listApplications: () => request<Application[]>("/applications"),
   addApplication: (app: NewApplication) =>

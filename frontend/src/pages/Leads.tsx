@@ -73,6 +73,7 @@ export default function Leads() {
       const res = await api.scrape();
       notify(`Scrape done — ${res.inserted} new leads (${res.total_found} found)`);
       if (res.errors.length) res.errors.slice(0, 2).forEach((err) => notify(err, "info"));
+      setScrapeOpen(false);
       await load();
     } catch (e) {
       notify(e instanceof Error ? e.message : "Scrape failed", "error");
@@ -431,7 +432,7 @@ function ScrapeModal({
       onClose={onClose}
       footer={
         <>
-          <Button variant="secondary" onClick={onClose} disabled={running}>
+          <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
           <Button loading={running} icon={<Icon name="refresh" className="h-4 w-4" />} onClick={onRun}>
@@ -443,6 +444,11 @@ function ScrapeModal({
       <p className="text-sm text-slate-600">
         Pulls new matching jobs from every enabled source using your configured keywords. New
         listings are deduplicated by URL, scored, and added to the pipeline.
+      </p>
+      <p className="mt-3 text-sm text-slate-500">
+        Runs against all sources enabled in Settings. Upwork, Fiverr and Freelancer often block
+        automated access — that shows up as expected errors, and official feeds (Indeed, Remotive,
+        RemoteOK, WeWorkRemotely) still fill your pipeline.
       </p>
     </Modal>
   );

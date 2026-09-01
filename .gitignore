@@ -29,3 +29,6 @@ contracts/cache/
 # IDE
 .idea/
 .vscode/
+
+# Playwright MCP session artifacts
+.playwright-mcp/

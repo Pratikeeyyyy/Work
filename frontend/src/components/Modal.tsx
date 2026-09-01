@@ -31,7 +31,7 @@ export default function Modal({
   return (
     <div className="fixed inset-0 z-40 overflow-y-auto">
       <div className="fixed inset-0 bg-slate-900/50" onClick={onClose} aria-hidden="true" />
-      <div className="flex min-h-full items-end justify-center p-4 sm:items-center">
+      <div className="relative z-10 flex min-h-full items-end justify-center p-4 sm:items-center">
         <div
           ref={panel}
           role="dialog"

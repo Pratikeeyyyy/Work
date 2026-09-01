@@ -116,15 +116,6 @@ pub fn revoke_session(token: &str) {
     map.remove(token);
 }
 
-/// Count of live sessions (for diagnostics / tests).
-#[cfg(test)]
-pub fn session_count() -> usize {
-    sessions()
-        .lock()
-        .map(|m| m.len())
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

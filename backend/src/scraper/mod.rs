@@ -9,6 +9,7 @@ pub mod weworkremotely;
 use crate::db::Db;
 use crate::hunt;
 use crate::models::{NewLead, ScrapeResponse};
+use futures::future::join_all;
 use tokio::time::{sleep, Duration};
 
 pub const USER_AGENTS: [&str; 4] = [
@@ -63,44 +64,54 @@ pub async fn run_scrape(
     // at/above the threshold is marked `queued` for the Discover page.
     let profile = hunt::Profile::from_db(&db);
     let queue_threshold = db.auto_queue_threshold();
+
+    // Fetch each enabled source concurrently (the per-keyword politeness sleep
+    // lives inside each source's own loop). DB writes happen only after all
+    // fetches complete, so the shared connection is never held across an await.
+    let batches = sources
+        .iter()
+        .filter_map(|s| {
+            let source = s.trim().to_lowercase();
+            if source.is_empty() {
+                return None;
+            }
+            Some(fetch_source(
+                source,
+                keywords.clone(),
+                location.clone(),
+                max_per_run,
+            ))
+        });
+
+    // Bound the whole run so a blocked source can never hang the request.
+    let batches = match tokio::time::timeout(Duration::from_secs(150), join_all(batches)).await {
+        Ok(batches) => batches,
+        Err(_) => {
+            return ScrapeResponse {
+                inserted: 0,
+                total_found: 0,
+                errors: vec![
+                    "scrape stopped after 150s; reduce the sources in Settings for a faster run"
+                        .into(),
+                ],
+            };
+        }
+    };
+
     let mut inserted: i64 = 0;
     let mut total_found: i64 = 0;
     let mut errors: Vec<String> = Vec::new();
-
-    for source in sources {
-        let source = source.trim().to_lowercase();
-        if source.is_empty() {
-            continue;
-        }
-        for kw in &keywords {
-            // polite rate limiting between requests
-            sleep(Duration::from_millis(rand::random::<u64>() % 1500 + 1000)).await;
-            let result: Result<Vec<NewLead>, String> = match source.as_str() {
-                "upwork" | "upwork.com" => upwork::fetch(&kw).await,
-                "freelancer" | "freelancer.com" => freelancer::fetch(&kw).await,
-                "fiverr" | "fiverr.com" => fiverr::fetch(&kw).await,
-                "indeed" | "indeed.com" => indeed::fetch(&kw, location.as_deref()).await,
-                "remotive" | "remotive.com" => remotive::fetch(&kw).await,
-                "weworkremotely" | "weworkremotely.com" => weworkremotely::fetch(&kw).await,
-                "remoteok" | "remoteok.com" => remoteok::fetch(&kw).await,
-                other => Err(format!("unknown source: {}", other)),
-            };
-            match result {
-                Ok(leads) => {
-                    let found = leads.len() as i64;
-                    total_found += found;
-                    for lead in leads.into_iter().take(max_per_run) {
-                        match db.insert_lead(&lead) {
-                            Ok(true) => {
-                                inserted += 1;
-                                queue_if_fit(&db, &lead, &profile, queue_threshold);
-                            }
-                            Ok(false) => {}
-                            Err(e) => errors.push(format!("db error: {}", e)),
-                        }
-                    }
+    for (found, leads, mut source_errors) in batches {
+        total_found += found;
+        errors.append(&mut source_errors);
+        for lead in leads {
+            match db.insert_lead(&lead) {
+                Ok(true) => {
+                    inserted += 1;
+                    queue_if_fit(&db, &lead, &profile, queue_threshold);
                 }
-                Err(e) => errors.push(format!("[{} / {}] {}", source, kw, e)),
+                Ok(false) => {}
+                Err(e) => errors.push(format!("db error: {}", e)),
             }
         }
     }
@@ -114,6 +125,38 @@ pub async fn run_scrape(
         total_found,
         errors,
     }
+}
+
+/// Crawl one source over every keyword. Returns found leads, a count, and any
+/// per-source errors so a single bad source can't abort the whole run.
+async fn fetch_source(
+    source: String,
+    keywords: Vec<String>,
+    location: Option<String>,
+    max_per_run: usize,
+) -> (i64, Vec<NewLead>, Vec<String>) {
+    let mut leads: Vec<NewLead> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    for kw in &keywords {
+        // polite rate limiting between requests to the same source
+        sleep(Duration::from_millis(rand::random::<u64>() % 1400 + 1000)).await;
+        let result: Result<Vec<NewLead>, String> = match source.as_str() {
+            "upwork" | "upwork.com" => upwork::fetch(kw).await,
+            "freelancer" | "freelancer.com" => freelancer::fetch(kw).await,
+            "fiverr" | "fiverr.com" => fiverr::fetch(kw).await,
+            "indeed" | "indeed.com" => indeed::fetch(kw, location.as_deref()).await,
+            "remotive" | "remotive.com" => remotive::fetch(kw).await,
+            "weworkremotely" | "weworkremotely.com" => weworkremotely::fetch(kw).await,
+            "remoteok" | "remoteok.com" => remoteok::fetch(kw).await,
+            other => Err(format!("unknown source: {}", other)),
+        };
+        match result {
+            Ok(found) => leads.extend(found.into_iter().take(max_per_run)),
+            Err(e) => errors.push(format!("[{} / {}] {}", source, kw, e)),
+        }
+    }
+    let found = leads.len() as i64;
+    (found, leads, errors)
 }
 
 /// Score a freshly inserted lead against the user profile and, if it meets the

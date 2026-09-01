@@ -90,6 +90,33 @@ pub struct RegisterRequest {
     pub password: String,
 }
 
+/// Validate a username (trimmed) for account registration. Returns an error
+/// message, or `None` when the username is acceptable.
+fn username_error(username: &str) -> Option<&'static str> {
+    let name = username.trim();
+    if name.len() < 3 || name.len() > 64 {
+        return Some("username must be 3-64 characters");
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        return Some("username may only contain letters, digits, _ - .");
+    }
+    None
+}
+
+/// Validate a password for account registration.
+fn password_error(password: &str) -> Option<&'static str> {
+    if password.len() < 8 {
+        return Some("password must be at least 8 characters");
+    }
+    if password.len() > 128 {
+        return Some("password must be at most 128 characters");
+    }
+    None
+}
+
 /// Create a new account and return an authenticated session. The user's data is
 /// stored in an isolated database created here, so each account is fully
 /// independent (no shared leads/profile/settings).
@@ -97,13 +124,13 @@ async fn register(
     State(db): State<Db>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if let Some(msg) = username_error(&req.username) {
+        return Err((StatusCode::BAD_REQUEST, msg.into()));
+    }
+    if let Some(msg) = password_error(&req.password) {
+        return Err((StatusCode::BAD_REQUEST, msg.into()));
+    }
     let username = req.username.trim().to_string();
-    if username.is_empty() || username.len() > 64 {
-        return Err((StatusCode::BAD_REQUEST, "username is required (max 64 chars)".into()));
-    }
-    if req.password.len() < 8 {
-        return Err((StatusCode::BAD_REQUEST, "password must be at least 8 characters".into()));
-    }
     if db.user_exists(&username) {
         return Err((StatusCode::CONFLICT, "username already taken".into()));
     }
@@ -131,6 +158,9 @@ async fn login(
     State(db): State<Db>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if req.username.trim().is_empty() || req.password.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "username and password are required".into()));
+    }
     let username = req.username.trim();
     let stored = db.user_password_hash(username);
     match stored {
@@ -858,4 +888,34 @@ fn rusqlite_err(e: rusqlite::Error) -> (axum::http::StatusCode, String) {
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
         format!("database error: {}", e),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn username_validation_accepts_good_names() {
+        assert_eq!(username_error("alice"), None);
+        assert_eq!(username_error("alice123"), None);
+        assert_eq!(username_error("a_b-c.d"), None);
+        assert_eq!(username_error("  alice  "), None);
+    }
+
+    #[test]
+    fn username_validation_rejects_bad_names() {
+        assert!(username_error("").is_some());
+        assert!(username_error("ab").is_some());
+        assert!(username_error(&"a".repeat(65)).is_some());
+        assert!(username_error("al!ce").is_some());
+        assert!(username_error("al ice").is_some());
+        assert!(username_error("🚀").is_some());
+    }
+
+    #[test]
+    fn password_validation_checks_length() {
+        assert!(!password_error("password").is_some());
+        assert!(password_error("short").is_some());
+        assert!(password_error(&"a".repeat(129)).is_some());
+    }
 }

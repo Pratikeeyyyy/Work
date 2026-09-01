@@ -1,13 +1,12 @@
-//! Single-user authentication.
+//! Multi-user authentication.
 //!
-//! The API is gated behind bearer-token sessions. A password is set either via the
-//! `APP_PASSWORD` environment variable (recommended — it survives DB resets on free
-//! hosting) or via the `/auth/setup` endpoint (stored hashed in the database).
-//! Passwords are never stored in plaintext: they are hashed with PBKDF2-HMAC-SHA256.
+//! The API is gated behind bearer-token sessions. Each registered user has an
+//! account (username + password) stored in the central `users` table, and their
+//! data lives in an isolated per-user database. Passwords are never stored in
+//! plaintext: they are hashed with PBKDF2-HMAC-SHA256.
 //!
-//! Sessions are kept in memory, so a server restart invalidates all tokens (users
-//! simply log in again). This is intentionally simple and appropriate for a
-//! single-user tool; multi-user auth would need a proper identity provider.
+//! Sessions are kept in memory and bound to the username that logged in, so a
+//! server restart invalidates all tokens (users simply log in again).
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use ring::pbkdf2;
@@ -17,15 +16,14 @@ use std::num::NonZeroU32;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::db::Db;
-
 const CRED_LEN: usize = 32;
 const ITERATIONS: u32 = 100_000;
 const SESSION_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60); // 7 days
 
-static SESSIONS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+/// Sessions map: bearer token -> (username, created_at).
+static SESSIONS: OnceLock<Mutex<HashMap<String, (String, Instant)>>> = OnceLock::new();
 
-fn sessions() -> &'static Mutex<HashMap<String, Instant>> {
+fn sessions() -> &'static Mutex<HashMap<String, (String, Instant)>> {
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -86,59 +84,29 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Whether a password is configured (env var preferred, then DB hash).
-pub fn is_password_set(db: &Db) -> bool {
-    if let Ok(p) = std::env::var("APP_PASSWORD") {
-        if !p.trim().is_empty() {
-            return true;
-        }
-    }
-    db.get_setting("auth.password_hash")
-        .map(|h| !h.is_empty())
-        .unwrap_or(false)
-}
-
-/// Verify a login attempt against the configured password (env var or DB hash).
-pub fn authenticate(db: &Db, password: &str) -> bool {
-    if let Ok(p) = std::env::var("APP_PASSWORD") {
-        if !p.trim().is_empty() {
-            return verify_password(password, &hash_password(&p));
-        }
-    }
-    match db.get_setting("auth.password_hash") {
-        Some(h) if !h.is_empty() => verify_password(password, &h),
-        _ => false,
-    }
-}
-
-/// Set a password (hashed) in the database.
-pub fn set_password(db: &Db, password: &str) -> Result<(), rusqlite::Error> {
-    if password.len() < 8 {
-        return Err(rusqlite::Error::InvalidQuery); // caller maps to a friendly message
-    }
-    db.set_setting("auth.password_hash", &hash_password(password))
-}
-
-/// Create a new session token for an authenticated user.
-pub fn create_session() -> String {
+/// Create a new session token bound to a logged-in user.
+pub fn create_session(username: &str) -> String {
     let token = B64.encode(random_bytes(32));
     let now = Instant::now();
     let mut map = sessions().lock().unwrap_or_else(|p| p.into_inner());
-    map.insert(token.clone(), now);
+    map.insert(token.clone(), (username.to_string(), now));
     token
 }
 
-/// Whether the given bearer token is a currently valid session.
-pub fn is_valid_token(token: &str) -> bool {
+/// If the bearer token is a current valid session, return the username it
+/// belongs to. Expired sessions are lazily evicted.
+pub fn username_for_token(token: &str) -> Option<String> {
     let mut map = sessions().lock().unwrap_or_else(|p| p.into_inner());
     let now = Instant::now();
     match map.get(token) {
-        Some(created) if now.duration_since(*created) <= SESSION_TTL => true,
+        Some((username, created)) if now.duration_since(*created) <= SESSION_TTL => {
+            Some(username.clone())
+        }
         Some(_) => {
             map.remove(token);
-            false
+            None
         }
-        None => false,
+        None => None,
     }
 }
 
@@ -186,13 +154,16 @@ mod tests {
 
     #[test]
     fn sessions_create_and_validate() {
-        let t1 = create_session();
-        let t2 = create_session();
-        assert!(is_valid_token(&t1));
-        assert!(is_valid_token(&t2));
-        assert!(!is_valid_token("bogus-token"));
+        let t1 = create_session("alice");
+        let t2 = create_session("bob");
+        assert!(username_for_token(&t1).is_some());
+        assert!(username_for_token(&t2).is_some());
+        assert!(username_for_token("bogus-token").is_none());
+        // Session is bound to the user who logged in.
+        assert_eq!(username_for_token(&t1).as_deref(), Some("alice"));
+        assert_eq!(username_for_token(&t2).as_deref(), Some("bob"));
         revoke_session(&t1);
-        assert!(!is_valid_token(&t1));
-        assert!(is_valid_token(&t2));
+        assert!(username_for_token(&t1).is_none());
+        assert!(username_for_token(&t2).is_some());
     }
 }

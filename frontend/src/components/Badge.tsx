@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+﻿import type { ReactNode } from "react";
 
 export type Tone = "slate" | "sky" | "indigo" | "amber" | "violet" | "emerald" | "rose";
 
@@ -35,6 +35,9 @@ const STATUS_TONE: Record<string, Tone> = {
   freelancer: "violet",
   fiverr: "emerald",
   indeed: "indigo",
+  remotive: "sky",
+  weworkremotely: "emerald",
+  remoteok: "rose",
   linkedin: "violet",
   facebook: "sky",
   manual: "slate",
@@ -48,6 +51,12 @@ const STATUS_TONE: Record<string, Tone> = {
 };
 
 const uppercase = new Set(["upwork", "fiverr", "manual", "linkedin"]);
+
+const displayOverrides: Record<string, string> = {
+  remoteok: "RemoteOK",
+  weworkremotely: "WeWorkRemotely",
+  remotive: "Remotive",
+};
 
 export function Badge({
   tone = "slate",
@@ -74,6 +83,7 @@ export function statusTone(status: string): Tone {
 
 export function displayLabel(status: string): string {
   const key = status.toLowerCase();
+  if (displayOverrides[key]) return displayOverrides[key];
   if (uppercase.has(key)) return key.toUpperCase();
   return key.charAt(0).toUpperCase() + key.slice(1);
 }

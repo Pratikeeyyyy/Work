@@ -19,6 +19,9 @@ const SOURCE_LABEL: Record<string, string> = {
   upwork: "Upwork",
   fiverr: "Fiverr",
   freelancer: "Freelancer",
+  remotive: "Remotive",
+  weworkremotely: "WeWorkRemotely",
+  remoteok: "RemoteOK",
   facebook: "Facebook",
   manual: "Manual",
 };

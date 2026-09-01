@@ -22,8 +22,7 @@ Serves on `:8080` (override with `BIND` env var). Creates `leadgen.db` on first 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BIND` | `0.0.0.0:8080` | Listen address |
-| `DATABASE_PATH` | `leadgen.db` | SQLite file path |
-| `APP_PASSWORD` | *(empty)* | Optional. Single-user password. When set, login uses it and the DB-stored password is ignored. Recommended for Render (survives DB reset). |
+| `DATABASE_PATH` | `leadgen.db` | SQLite file path (account registry; each user also gets a `user_<name>.db` data file in the same directory) |
 | `CORS_ORIGIN` | `http://localhost:5173` | Allowed frontend origin (comma-separated allowed) |
 
 ## Tests
@@ -32,13 +31,14 @@ Serves on `:8080` (override with `BIND` env var). Creates `leadgen.db` on first 
 cargo test
 ```
 
-Covers the three scrapers (upwork, freelancer, fiverr) and the database layer
-(lead insert/dedupe, scoring, contract status updates, settings).
+Covers the source scrapers (remotive, weworkremotely, remoteok, indeed, upwork,
+freelancer, fiverr) and the database layer (lead insert/dedupe, scoring, contract
+status updates, settings, user registration + per-user data isolation).
 
 ## Architecture
 
 - `main.rs` — HTTP server bootstrap, tracing, CORS, and the background auto-discovery worker (`auto_discovery_loop`)
-- `auth.rs` — single-user auth: PBKDF2 password hashing, in-memory sessions, middleware
+- `auth.rs` — multi-user auth: PBKDF2 password hashing, user-scoped in-memory sessions, auth middleware
 - `api.rs` — all REST route handlers
 - `db.rs` — SQLite schema, migrations, queries
 - `models.rs` — serde structs shared across the API and DB layers

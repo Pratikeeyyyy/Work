@@ -3,7 +3,7 @@ use crate::db::Db;
 use crate::hunt;
 use crate::models::*;
 use crate::scraper;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{Extension, Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -11,12 +11,16 @@ use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 
+/// Build the application router. `db` is the central account registry (users
+/// table). Each authenticated request is routed to its own isolated per-user
+/// data database via the auth middleware, which injects that user's `Db` as a
+/// request `Extension` for the protected handlers.
 pub fn router(db: Db) -> Router {
-    // Public routes: health check, login, first-run password setup.
+    // Public routes: health check, account registration, login, status, logout.
     let public = Router::new()
         .route("/health", get(health))
+        .route("/register", post(register))
         .route("/login", post(login))
-        .route("/auth/setup", post(setup_auth))
         .route("/auth/logout", post(logout))
         .route("/auth/status", get(auth_status));
 
@@ -56,83 +60,101 @@ pub fn router(db: Db) -> Router {
 }
 
 /// Reject requests that do not carry a valid bearer token. Preflight (CORS)
-/// and the public routes are let through.
+/// and the public routes are let through. For valid tokens, resolve the
+/// authenticated user's username and inject their isolated data `Db` into the
+/// request so downstream handlers operate only on that user's data.
 async fn auth_middleware(req: Request, next: Next) -> Response {
     let method = req.method().clone();
     if method == axum::http::Method::OPTIONS {
         return next.run(req).await;
     }
-    let authorized = req
+    let username = req
         .headers()
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .map(auth::is_valid_token)
-        .unwrap_or(false);
-    if authorized {
-        next.run(req).await
-    } else {
-        (StatusCode::UNAUTHORIZED, "unauthorized".to_string()).into_response()
+        .and_then(auth::username_for_token);
+    match username {
+        Some(username) => {
+            let mut req = req;
+            req.extensions_mut().insert(crate::db::user_db_for(&username));
+            next.run(req).await
+        }
+        None => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()).into_response(),
     }
 }
 
 #[derive(Deserialize)]
-pub struct LoginRequest {
+pub struct RegisterRequest {
+    pub username: String,
     pub password: String,
 }
 
-async fn auth_status(
+/// Create a new account and return an authenticated session. The user's data is
+/// stored in an isolated database created here, so each account is fully
+/// independent (no shared leads/profile/settings).
+async fn register(
     State(db): State<Db>,
+    Json(req): Json<RegisterRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let username = req.username.trim().to_string();
+    if username.is_empty() || username.len() > 64 {
+        return Err((StatusCode::BAD_REQUEST, "username is required (max 64 chars)".into()));
+    }
+    if req.password.len() < 8 {
+        return Err((StatusCode::BAD_REQUEST, "password must be at least 8 characters".into()));
+    }
+    if db.user_exists(&username) {
+        return Err((StatusCode::CONFLICT, "username already taken".into()));
+    }
+    let hash = auth::hash_password(&req.password);
+    db.register_user(&username, &hash)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to register: {e}")))?;
+    // Create this user's isolated data database (full schema + default settings).
+    db.create_user_data(&username)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "failed to initialize account data".into()))?;
+    let token = auth::create_session(&username);
+    Ok(Json(serde_json::json!({
+        "message": "account created",
+        "token": token,
+        "username": username,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+async fn login(
+    State(db): State<Db>,
+    Json(req): Json<LoginRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let username = req.username.trim();
+    let stored = db.user_password_hash(username);
+    match stored {
+        Some(hash) if auth::verify_password(&req.password, &hash) => {
+            let token = auth::create_session(username);
+            Ok(Json(serde_json::json!({ "token": token, "username": username })))
+        }
+        _ => Err((StatusCode::UNAUTHORIZED, "invalid username or password".into())),
+    }
+}
+
+async fn auth_status(
     req: Request,
 ) -> Json<serde_json::Value> {
-    let has_password = auth::is_password_set(&db);
     let authenticated = req
         .headers()
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .map(auth::is_valid_token)
-        .unwrap_or(false);
+        .and_then(auth::username_for_token);
     Json(serde_json::json!({
-        "authenticated": authenticated,
-        "hasPassword": has_password,
+        "authenticated": authenticated.is_some(),
+        "username": authenticated,
     }))
-}
-
-async fn login(State(db): State<Db>, Json(req): Json<LoginRequest>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    if !auth::is_password_set(&db) {
-        return Err((
-            StatusCode::PRECONDITION_FAILED,
-            "No password configured. Set the APP_PASSWORD environment variable, or POST /auth/setup once to create one.".into(),
-        ));
-    }
-    if auth::authenticate(&db, &req.password) {
-        let token = auth::create_session();
-        Ok(Json(serde_json::json!({ "token": token })))
-    } else {
-        Err((StatusCode::UNAUTHORIZED, "invalid password".into()))
-    }
-}
-
-#[derive(Deserialize)]
-pub struct SetupAuthRequest {
-    pub password: String,
-}
-
-/// Set the initial password (first run). Only allowed when no password is
-/// configured yet. Call from the frontend with a strong password.
-async fn setup_auth(State(db): State<Db>, Json(req): Json<SetupAuthRequest>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    if auth::is_password_set(&db) {
-        return Err((StatusCode::CONFLICT, "a password is already configured".into()));
-    }
-    if req.password.len() < 8 {
-        return Err((StatusCode::BAD_REQUEST, "password must be at least 8 characters".into()));
-    }
-    auth::set_password(&db, &req.password)
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "failed to set password".into()))?;
-    // Auto-login after setup.
-    let token = auth::create_session();
-    Ok(Json(serde_json::json!({ "message": "password set", "token": token })))
 }
 
 async fn logout(req: Request) -> Response {
@@ -151,7 +173,7 @@ async fn health() -> &'static str {
     "ok"
 }
 
-async fn stats(State(db): State<Db>) -> Json<Stats> {
+async fn stats(Extension(db): Extension<Db>) -> Json<Stats> {
     Json(db.stats().unwrap_or_else(|_e| {
         Stats {
             total_leads: 0,
@@ -179,7 +201,7 @@ pub struct LeadQuery {
 }
 
 async fn list_leads(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Query(q): Query<LeadQuery>,
 ) -> Result<Json<Vec<Lead>>, (axum::http::StatusCode, String)> {
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
@@ -194,7 +216,7 @@ async fn list_leads(
 }
 
 async fn get_lead(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Path(id): Path<i64>,
 ) -> Result<Json<Lead>, (axum::http::StatusCode, String)> {
     db.get_lead(id)
@@ -206,7 +228,7 @@ async fn get_lead(
 /// Generate personalized outreach drafts (proposal / message / email) for a lead
 /// using the user's saved profile.
 async fn lead_outreach(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Path(id): Path<i64>,
 ) -> Result<Json<Vec<hunt::OutreachDraft>>, (axum::http::StatusCode, String)> {
     let lead = db
@@ -218,7 +240,7 @@ async fn lead_outreach(
 }
 
 async fn add_lead(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Json(mut l): Json<NewLead>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
     if l.source.trim().is_empty() {
@@ -245,7 +267,7 @@ pub struct ImportRequest {
 /// logged-out scraping, we store the URL with a source guess and mark it for
 /// review rather than failing.
 async fn import_lead_url(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Json(req): Json<ImportRequest>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
     if req.url.trim().is_empty() {
@@ -260,7 +282,7 @@ async fn import_lead_url(
 
 /// Recompute every lead's fit score against the user's profile. Returns how
 /// many leads were updated.
-async fn rescore_leads(State(db): State<Db>) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+async fn rescore_leads(Extension(db): Extension<Db>) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let profile = hunt::Profile::from_db(&db);
     let leads = db.list_leads(None, None, None, 10000).map_err(rusqlite_err)?;
     let mut updated = 0i64;
@@ -277,7 +299,7 @@ async fn rescore_leads(State(db): State<Db>) -> Result<Json<serde_json::Value>, 
 }
 
 async fn remove_lead(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Path(id): Path<i64>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
     db.delete_lead(id).map_err(rusqlite_err)?;
@@ -287,7 +309,7 @@ async fn remove_lead(
 }
 
 async fn update_status(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Path(id): Path<i64>,
     Json(s): Json<StatusUpdate>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
@@ -305,7 +327,7 @@ async fn update_status(
 }
 
 async fn update_notes(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Path(id): Path<i64>,
     Json(n): Json<serde_json::Value>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
@@ -317,7 +339,7 @@ async fn update_notes(
 }
 
 async fn to_client(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Path(id): Path<i64>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
     if db.get_lead(id).map_err(rusqlite_err)?.is_none() {
@@ -331,7 +353,7 @@ async fn to_client(
 }
 
 async fn list_clients(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Query(q): Query<LeadQuery>,
 ) -> Result<Json<Vec<Client>>, (axum::http::StatusCode, String)> {
     db.list_clients(q.status.as_deref())
@@ -340,7 +362,7 @@ async fn list_clients(
 }
 
 async fn get_client(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Path(id): Path<i64>,
 ) -> Result<Json<Client>, (axum::http::StatusCode, String)> {
     db.get_client(id)
@@ -350,7 +372,7 @@ async fn get_client(
 }
 
 async fn add_client(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Json(c): Json<NewClient>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
     if c.name.trim().is_empty() {
@@ -363,7 +385,7 @@ async fn add_client(
 }
 
 async fn update_client(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Path(id): Path<i64>,
     Json(mut c): Json<Client>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
@@ -375,7 +397,7 @@ async fn update_client(
 }
 
 async fn remove_client(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Path(id): Path<i64>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
     db.delete_client(id).map_err(rusqlite_err)?;
@@ -385,7 +407,7 @@ async fn remove_client(
 }
 
 async fn list_contracts(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
 ) -> Result<Json<Vec<Contract>>, (axum::http::StatusCode, String)> {
     db.list_contracts()
         .map(Json)
@@ -393,7 +415,7 @@ async fn list_contracts(
 }
 
 async fn add_contract(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Json(c): Json<NewContract>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
     if db.get_client(c.client_id).map_err(rusqlite_err)?.is_none() {
@@ -412,7 +434,7 @@ pub struct DeployRequest {
 }
 
 async fn deploy_contract(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Path(id): Path<i64>,
     Json(body): Json<DeployRequest>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
@@ -449,7 +471,7 @@ async fn deploy_contract(
 }
 
 async fn update_contract_status(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Path(id): Path<i64>,
     Json(s): Json<StatusUpdate>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
@@ -477,12 +499,12 @@ async fn update_contract_status(
 
 // ---------- Applications (job-application pipeline) ----------
 
-async fn list_applications(State(db): State<Db>) -> Result<Json<Vec<Application>>, (axum::http::StatusCode, String)> {
+async fn list_applications(Extension(db): Extension<Db>) -> Result<Json<Vec<Application>>, (axum::http::StatusCode, String)> {
     db.list_applications().map(Json).map_err(rusqlite_err)
 }
 
 async fn get_application(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Path(id): Path<i64>,
 ) -> Result<Json<Application>, (axum::http::StatusCode, String)> {
     db.get_application(id)
@@ -492,7 +514,7 @@ async fn get_application(
 }
 
 async fn add_application(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Json(a): Json<NewApplication>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
     if db.get_lead(a.lead_id).map_err(rusqlite_err)?.is_none() {
@@ -505,7 +527,7 @@ async fn add_application(
 }
 
 async fn update_application(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Path(id): Path<i64>,
     Json(u): Json<ApplicationUpdate>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
@@ -519,7 +541,7 @@ async fn update_application(
 }
 
 async fn delete_application(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Path(id): Path<i64>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
     db.delete_application(id).map_err(rusqlite_err)?;
@@ -530,12 +552,12 @@ async fn delete_application(
 
 // ---------- Profile ----------
 
-async fn get_profile(State(db): State<Db>) -> Json<hunt::Profile> {
+async fn get_profile(Extension(db): Extension<Db>) -> Json<hunt::Profile> {
     Json(hunt::Profile::from_db(&db))
 }
 
 async fn put_profile(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Json(p): Json<hunt::Profile>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
     p.save(&db).map_err(rusqlite_err)?;
@@ -556,7 +578,7 @@ pub struct LinkedinUrlQuery {
 }
 
 async fn linkedin_auth_url(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Query(q): Query<LinkedinUrlQuery>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let client_id = db
@@ -588,7 +610,7 @@ pub struct LinkedinCallback {
 }
 
 async fn linkedin_callback(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Json(body): Json<LinkedinCallback>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let client_id = db.get_setting("linkedin.client_id").unwrap_or_default();
@@ -618,7 +640,7 @@ async fn linkedin_callback(
     Ok(Json(result))
 }
 
-async fn linkedin_status(State(db): State<Db>) -> Json<serde_json::Value> {
+async fn linkedin_status(Extension(db): Extension<Db>) -> Json<serde_json::Value> {
     let has_token = db.get_setting("linkedin.access_token").map(|t| !t.is_empty()).unwrap_or(false);
     let name = db.get_setting("linkedin.member_name").unwrap_or_default();
     let configured = db
@@ -634,14 +656,14 @@ async fn linkedin_status(State(db): State<Db>) -> Json<serde_json::Value> {
 }
 
 
-async fn get_keywords(State(db): State<Db>) -> Json<KeywordSetting> {
+async fn get_keywords(Extension(db): Extension<Db>) -> Json<KeywordSetting> {
     Json(KeywordSetting {
         keywords: db.get_keywords(),
     })
 }
 
 async fn put_keywords(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Json(k): Json<KeywordSetting>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
     let cleaned: Vec<String> = k
@@ -657,7 +679,7 @@ async fn put_keywords(
     }))
 }
 
-async fn get_sources(State(db): State<Db>) -> Json<KeywordSetting> {
+async fn get_sources(Extension(db): Extension<Db>) -> Json<KeywordSetting> {
     let raw = db.get_setting("sources").unwrap_or_else(|| "upwork.freelancer.fiverr".into());
     Json(KeywordSetting {
         keywords: raw.split(',').map(|s| s.trim().to_string()).collect(),
@@ -665,7 +687,7 @@ async fn get_sources(State(db): State<Db>) -> Json<KeywordSetting> {
 }
 
 async fn put_sources(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Json(k): Json<KeywordSetting>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
     let cleaned: Vec<String> = k
@@ -688,7 +710,7 @@ pub struct LinkedinSettings {
     pub redirect_uri: Option<String>,
 }
 
-async fn get_linkedin_settings(State(db): State<Db>) -> Json<serde_json::Value> {
+async fn get_linkedin_settings(Extension(db): Extension<Db>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "client_id": db.get_setting("linkedin.client_id").unwrap_or_default(),
         // Never return the secret in full.
@@ -698,7 +720,7 @@ async fn get_linkedin_settings(State(db): State<Db>) -> Json<serde_json::Value> 
 }
 
 async fn put_linkedin_settings(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Json(s): Json<LinkedinSettings>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
     if let Some(id) = &s.client_id {
@@ -720,7 +742,7 @@ async fn put_linkedin_settings(
 }
 
 async fn scrape(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Json(req): Json<ScrapeRequest>,
 ) -> Result<Json<ScrapeResponse>, (axum::http::StatusCode, String)> {    let max_per_run: usize = db
         .get_setting("max_leads_per_run")
@@ -757,7 +779,7 @@ struct AutoUpdateSettings {
 /// High-fit auto-queue: freshly discovered leads that matched your profile and
 /// were auto-added for a quick, tailored application.
 async fn lead_queue(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
 ) -> Result<Json<Vec<Lead>>, (axum::http::StatusCode, String)> {
     db.list_queued_leads().map(Json).map_err(rusqlite_err)
 }
@@ -766,7 +788,7 @@ async fn lead_queue(
 /// real source URL to open plus the outreach copy pre-drafted from your profile.
 /// You review and submit on the source site — nothing is auto-submitted.
 async fn lead_apply_kit(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let lead = db
@@ -793,12 +815,12 @@ async fn lead_apply_kit(
 /// Applications in the live pipeline that need a nudge right now, so you know
 /// exactly who to follow up with today.
 async fn applications_due(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
 ) -> Result<Json<Vec<Application>>, (axum::http::StatusCode, String)> {
     db.list_applications_due().map(Json).map_err(rusqlite_err)
 }
 
-async fn get_auto_update_settings(State(db): State<Db>) -> Json<serde_json::Value> {
+async fn get_auto_update_settings(Extension(db): Extension<Db>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "enabled": db.auto_pull_enabled(),
         "interval_mins": db.auto_pull_interval_mins(),
@@ -808,7 +830,7 @@ async fn get_auto_update_settings(State(db): State<Db>) -> Json<serde_json::Valu
 }
 
 async fn put_auto_update_settings(
-    State(db): State<Db>,
+    Extension(db): Extension<Db>,
     Json(s): Json<AutoUpdateSettings>,
 ) -> Result<Json<ApiMessage>, (axum::http::StatusCode, String)> {
     if let Some(enabled) = s.enabled {

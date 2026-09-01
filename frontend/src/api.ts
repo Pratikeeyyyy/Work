@@ -55,7 +55,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   } catch {
     throw new Error("Cannot reach the backend. Is `cargo run` server running on :8080?");
   }
-  if (res.status === 401 && !path.startsWith("/login") && !path.startsWith("/auth/setup")) {
+  if (res.status === 401 && !path.startsWith("/login") && !path.startsWith("/register")) {
     auth.clearToken();
     emitUnauthorized();
   }
@@ -75,15 +75,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  login: (password: string) =>
-    request<{ token: string }>("/login", { method: "POST", body: JSON.stringify({ password }) }),
-  setup: (password: string) =>
-    request<{ token: string; message?: string }>("/auth/setup", {
+  login: (username: string, password: string) =>
+    request<{ token: string; username: string }>("/login", { method: "POST", body: JSON.stringify({ username, password }) }),
+  register: (username: string, password: string) =>
+    request<{ token: string; username: string; message?: string }>("/register", {
       method: "POST",
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     }),
   logout: () => request<{ message?: string }>("/auth/logout", { method: "POST" }),
-  authStatus: () => request<{ authenticated: boolean; hasPassword: boolean }>("/auth/status"),
+  authStatus: () => request<{ authenticated: boolean; username: string | null }>("/auth/status"),
 
   stats: () => request<Stats>("/stats"),
 

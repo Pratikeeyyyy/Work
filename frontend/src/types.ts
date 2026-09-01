@@ -10,7 +10,7 @@ export const LEAD_STATUSES = [
 
 export const CLIENT_STATUSES = ["active", "inactive", "blacklisted"] as const;
 
-export const SOURCES = ["upwork", "freelancer", "fiverr", "indeed", "linkedin", "facebook", "manual"] as const;
+export const SOURCES = ["upwork", "freelancer", "fiverr", "indeed", "remotive", "weworkremotely", "remoteok", "linkedin", "facebook", "manual"] as const;
 
 export const APPLICATION_STATUSES = [
   "saved",

@@ -53,7 +53,7 @@ For Sepolia/mainnet deploy, copy `.env.example` → `.env` and fill in keys.
 
 ## Auth
 
-The app is single-user. All business endpoints require a bearer token (`Authorization: Bearer <token>`). The first time you run the server you either set `APP_PASSWORD` (recommended) or create a password once via `/auth/setup`; then log in to get a token (7-day session). See `SETUP.md`.
+The app supports multiple accounts. Each registered user's data (leads, clients, contracts, applications, profile, settings) is fully isolated in its own database file — accounts never share data. Register with a username + password via `/register`, then log in to get a token (7-day session). All business endpoints require `Authorization: Bearer <token>`. Passwords are stored hashed with PBKDF2-HMAC-SHA256. See `SETUP.md`.
 
 ## API endpoints
 
@@ -62,9 +62,9 @@ Public (no auth):
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check |
-| GET | `/auth/status` | Auth status (`hasPassword`, `authenticated`) |
-| POST | `/auth/setup` | Create the single-user password (simplified setup) |
-| POST | `/login` | Log in with password → returns session token |
+| GET | `/auth/status` | Auth status (`authenticated`, `username`) |
+| POST | `/register` | Create a new account (username + password) → returns session token |
+| POST | `/login` | Log in (username + password) → returns session token |
 | POST | `/auth/logout` | Invalidate current session |
 
 Protected (require `Authorization: Bearer <token>`):

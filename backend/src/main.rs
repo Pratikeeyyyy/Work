@@ -8,36 +8,46 @@ mod scraper;
 use axum::http::{header, HeaderValue, Method};
 use tower_http::cors::{Any, CorsLayer};
 
-/// Background auto-discovery loop. Polls the reliable Indeed RSS feeds on a
-/// configured interval, scoring and auto-queueing high-fit leads. Disabled
-/// unless `auto_pull_enabled` is set (default off, so dev/staging stays
-/// deterministic and polite).
-async fn auto_discovery_loop(db: db::Db) {
+/// Background auto-discovery loop. For every registered account, polls the
+/// reliable remote-job feeds (Remotive, We Work Remotely, RemoteOK — all legal
+/// public APIs) on that user's configured interval, scoring and auto-queueing
+/// high-fit leads into the user's own isolated data database. Disabled unless
+/// `auto_pull_enabled` is set (default off, so dev/staging stays deterministic
+/// and polite).
+async fn auto_discovery_loop(users_db: db::Db) {
     use std::time::Duration;
     tracing::info!("auto-discovery worker started");
     loop {
-        let enabled = db.auto_pull_enabled();
-        let interval = db.auto_pull_interval_mins().max(10);
-        let keywords = db.get_keywords();
-        if enabled && !keywords.is_empty() {
-            tracing::info!("auto-discovery pull starting (every {}m)", interval);
-            let result = scraper::run_scrape(
-                db.clone(),
-                &vec!["indeed".to_string()],
-                &keywords,
-                100,
-            )
-            .await;
-            db.set_last_auto_pull(&chrono::Utc::now().naive_utc().to_string());
-            tracing::info!(
-                "auto-discovery done: inserted={} errors={}",
-                result.inserted,
-                result.errors.len()
-            );
-        } else if !enabled {
-            tracing::debug!("auto-discovery disabled");
+        for username in users_db.list_users().unwrap_or_default() {
+            let user_db = db::user_db_for(&username);
+            let enabled = user_db.auto_pull_enabled();
+            let interval = user_db.auto_pull_interval_mins().max(10);
+            let keywords = user_db.get_keywords();
+            if enabled && !keywords.is_empty() {
+                tracing::info!(
+                    "auto-discovery pull starting for {username} (every {}m)",
+                    interval
+                );
+                let result = scraper::run_scrape(
+                    user_db.clone(),
+                    &vec![
+                        "remotive".to_string(),
+                        "weworkremotely".to_string(),
+                        "remoteok".to_string(),
+                    ],
+                    &keywords,
+                    100,
+                )
+                .await;
+                user_db.set_last_auto_pull(&chrono::Utc::now().naive_utc().to_string());
+                tracing::info!(
+                    "auto-discovery done for {username}: inserted={} errors={}",
+                    result.inserted,
+                    result.errors.len()
+                );
+            }
         }
-        tokio::time::sleep(Duration::from_secs(interval * 60)).await;
+        tokio::time::sleep(Duration::from_secs(600)).await;
     }
 }
 
@@ -51,6 +61,15 @@ async fn main() {
         .init();
 
     let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "leadgen.db".into());
+
+    // Per-user data files live alongside the account registry database so they
+    // are covered by the same volume/persistence.
+    let user_dir = std::path::Path::new(&db_path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| ".".to_string());
+    db::set_user_data_dir(&user_dir);
 
     // Render injects PORT; local dev can set BIND or fall back to 8080.
     let bind = std::env::var("BIND").unwrap_or_else(|_| {

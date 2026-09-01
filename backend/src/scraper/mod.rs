@@ -1,7 +1,10 @@
 pub mod freelancer;
 pub mod fiverr;
 pub mod indeed;
+pub mod remotive;
+pub mod remoteok;
 pub mod upwork;
+pub mod weworkremotely;
 
 use crate::db::Db;
 use crate::hunt;
@@ -77,6 +80,9 @@ pub async fn run_scrape(
                 "freelancer" | "freelancer.com" => freelancer::fetch(&kw).await,
                 "fiverr" | "fiverr.com" => fiverr::fetch(&kw).await,
                 "indeed" | "indeed.com" => indeed::fetch(&kw, location.as_deref()).await,
+                "remotive" | "remotive.com" => remotive::fetch(&kw).await,
+                "weworkremotely" | "weworkremotely.com" => weworkremotely::fetch(&kw).await,
+                "remoteok" | "remoteok.com" => remoteok::fetch(&kw).await,
                 other => Err(format!("unknown source: {}", other)),
             };
             match result {
@@ -98,6 +104,10 @@ pub async fn run_scrape(
             }
         }
     }
+
+    // Re-sync the high-fit queue against the current profile/threshold so leads
+    // discovered earlier (or profile/threshold changes) are surfaced correctly.
+    db.recompute_queued(&profile, queue_threshold);
 
     ScrapeResponse {
         inserted,
@@ -123,4 +133,55 @@ fn queue_if_fit(db: &Db, lead: &NewLead, profile: &hunt::Profile, threshold: i64
     if s >= threshold {
         let _ = db.set_lead_queued(id, true);
     }
+}
+
+/// Remove HTML tags and decode common entities so scraped descriptions are
+/// readable. Shared by the HTML/JSON sources.
+pub(crate) fn strip_html(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_tag = false;
+    let mut tag_buf = String::new();
+    for ch in input.chars() {
+        if ch == '<' {
+            in_tag = true;
+            tag_buf.clear();
+        } else if ch == '>' {
+            in_tag = false;
+            out.push(' ');
+        } else if in_tag {
+            tag_buf.push(ch);
+        } else {
+            out.push(ch);
+        }
+    }
+    out.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Case-insensitive keyword relevance check used to filter full feeds (WWR,
+/// RemoteOK) down to items matching the user's keyword. Checks title +
+/// description + tags, allowing plural/partial matches.
+pub(crate) fn matches_keyword(lead: &NewLead, keyword: &str) -> bool {
+    let kw = keyword.trim().to_lowercase();
+    if kw.is_empty() {
+        return true;
+    }
+    let haystack = format!(
+        "{} {} {}",
+        lead.title,
+        lead.description,
+        lead.technologies.as_deref().unwrap_or("")
+    )
+    .to_lowercase();
+    kw.split_whitespace().all(|tok| {
+        let tok = tok.trim_matches(|c: char| !c.is_alphanumeric());
+        tok.is_empty() || haystack.contains(tok)
+    })
 }

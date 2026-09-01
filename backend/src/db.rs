@@ -1,11 +1,74 @@
 use crate::models::*;
 use rusqlite::{params, Connection, OptionalExtension};
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Clone)]
 pub struct Db {
     pub conn: Arc<Mutex<Connection>>,
 }
+
+/// Directory that holds each user's isolated data database files. Set once at
+/// startup via `set_user_data_dir` (derived from the main DATABASE_PATH).
+static USER_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+/// Cache of open per-user connections, keyed by resolved file path, so a
+/// user's data Db (and any in-flight transaction lock) is reused across
+/// requests and shared with the auto-discovery worker.
+static USER_DBS: OnceLock<Mutex<HashMap<String, Db>>> = OnceLock::new();
+
+fn user_dbs() -> &'static Mutex<HashMap<String, Db>> {
+    USER_DBS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Configure the directory where per-user data files are stored.
+pub fn set_user_data_dir(dir: &str) {
+    let _ = USER_DATA_DIR.set(PathBuf::from(dir));
+}
+
+fn sanitize_username_for_file(username: &str) -> String {
+    username
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect()
+}
+
+/// Absolute path of a user's isolated data database file.
+pub fn user_db_path(username: &str) -> PathBuf {
+    let dir = USER_DATA_DIR.get().cloned().unwrap_or_else(|| PathBuf::from("."));
+    dir.join(format!("user_{}.db", sanitize_username_for_file(username)))
+}
+
+/// Open (creating if needed) a user's isolated data database. Cached by path so
+/// the same underlying connection is reused across requests and by the
+/// auto-discovery worker. The full LeadGen schema is created on first use.
+pub fn user_db_for(username: &str) -> Db {
+    let path = user_db_path(username);
+    let key = path.to_string_lossy().to_string();
+    if let Some(db) = user_dbs().lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
+        return db.clone();
+    }
+    let db = Db::new(&path.to_string_lossy()).unwrap_or_else(|e| panic!("failed to open user db for {username}: {e}"));
+    user_dbs()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(key)
+        .or_insert_with(|| db.clone());
+    db
+}
+
+impl Db {
+    /// Create the user's isolated data database (full schema + default
+    /// settings). Called at registration; the file is created lazily by
+    /// `user_db_for` on first authenticated use otherwise.
+    pub fn create_user_data(&self, username: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let path = user_db_path(username);
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
+        Db::new(path.to_str().ok_or("bad user path")?)?;
+        Ok(())
+    }
+}
+
 
 impl Db {
     pub fn new(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
@@ -100,9 +163,18 @@ impl Db {
 
             CREATE INDEX IF NOT EXISTS idx_app_lead ON applications(lead_id);
 
+            -- Multi-user account registry. Each registered user gets their own
+            -- isolated data database file (see user_db_for), so account data is
+            -- never shared between users.
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
             INSERT OR IGNORE INTO settings (key, value)
             VALUES ('keywords', 'web development, react, rust, python, blockchain, solidity'),
-                   ('sources', 'upwork,freelancer,fiverr,indeed'),
+                   ('sources', 'upwork,freelancer,fiverr,indeed,remotive,weworkremotely,remoteok'),
                    ('max_leads_per_run', '100');
             "#,
         )?;
@@ -132,6 +204,50 @@ impl Db {
 
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap()
+    }
+
+    // ---------- Users (account registry) ----------
+
+    /// Register a new account. The user's data lives in its own isolated
+    /// database file (see `user_db_for`), so accounts never share data.
+    pub fn register_user(&self, username: &str, password_hash: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO users (username, password_hash) VALUES (?1, ?2)",
+            params![username, password_hash],
+        )?;
+        Ok(())
+    }
+
+    pub fn user_exists(&self, username: &str) -> bool {
+        self.conn()
+            .query_row("SELECT 1 FROM users WHERE username = ?1", params![username], |_| Ok(()))
+            .optional()
+            .map(|o| o.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Stored password hash for a username (None if the user does not exist).
+    pub fn user_password_hash(&self, username: &str) -> Option<String> {
+        self.conn()
+            .query_row(
+                "SELECT password_hash FROM users WHERE username = ?1",
+                params![username],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    /// All registered usernames (used by the per-user auto-discovery worker).
+    pub fn list_users(&self) -> Result<Vec<String>, rusqlite::Error> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT username FROM users ORDER BY username")?;
+        let users = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(users)
     }
 
     // ---------- Leads ----------
@@ -293,6 +409,33 @@ impl Db {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// Re-score every lead against the current profile + queue threshold and
+    /// sync the `queued` flag. Called after each scrape so the Discover queue
+    /// always reflects the latest profile/threshold, even for leads that were
+    /// inserted earlier (e.g. when the user lowers the threshold).
+    pub fn recompute_queued(&self, profile: &crate::hunt::Profile, threshold: i64) {
+        // Collect all leads first so the connection lock is released before we
+        // call other self.conn()-locking helpers below (avoids a nested-lock
+        // deadlock on the non-reentrant Mutex).
+        let leads: Vec<Lead> = {
+            let conn = self.conn();
+            let mut stmt = match conn.prepare(
+                "SELECT id, source, title, description, url, budget, budget_min, budget_max, currency, location, technologies, client_name, posted_date, status, score, notes, created_at
+                 FROM leads",
+            ) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let rows = stmt.query_map([], lead_from_row);
+            rows.map(|r| r.flatten().collect()).unwrap_or_default()
+        };
+        for row in leads {
+            let score = crate::hunt::score_lead_against_profile(0, &row, profile);
+            let _ = self.update_lead_score(row.id, score);
+            let _ = self.set_lead_queued(row.id, score >= threshold);
+        }
     }
 
     // ---------- Auto-discovery settings ----------
@@ -966,6 +1109,35 @@ mod tests {
     }
 
     #[test]
+    fn recompute_queued_resyncs_queue_for_threshold_changes() {
+        let db = test_db();
+        assert!(db.insert_lead(&sample_lead()).unwrap());
+        let id = db.lead_id_by_url("https://upwork.com/jobs/~test").unwrap().unwrap();
+        let profile = crate::hunt::Profile {
+            name: None,
+            title: None,
+            email: None,
+            location: None,
+            rate: None,
+            skills: vec![],
+            experience: None,
+            availability: None,
+            bio: None,
+            portfolio: None,
+            linkedin: None,
+            github: None,
+        };
+        // High threshold -> not queued even after recompute.
+        db.recompute_queued(&profile, 1000);
+        assert!(db.list_queued_leads().unwrap().is_empty());
+        // Threshold of 0 -> recompute queues the lead.
+        db.recompute_queued(&profile, 0);
+        let q = db.list_queued_leads().unwrap();
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].id, id);
+    }
+
+    #[test]
     fn applications_due_includes_overdue_and_excludes_hired() {
         let db = test_db();
         assert!(db.insert_lead(&sample_lead()).unwrap());
@@ -1066,5 +1238,59 @@ mod tests {
         assert!(!db.get_keywords().is_empty());
         db.set_setting("keywords", "rust, solidity").unwrap();
         assert_eq!(db.get_keywords(), vec!["rust".to_string(), "solidity".to_string()]);
+    }
+
+    #[test]
+    fn register_user_and_retrieve_hash() {
+        let db = test_db();
+        assert!(!db.user_exists("alice"));
+        db.register_user("alice", "$hash").unwrap();
+        assert!(db.user_exists("alice"));
+        assert_eq!(db.user_password_hash("alice").as_deref(), Some("$hash"));
+        assert_eq!(db.user_password_hash("nobody"), None);
+    }
+
+    #[test]
+    fn duplicate_username_rejected() {
+        let db = test_db();
+        db.register_user("bob", "$h1").unwrap();
+        assert!(db.register_user("bob", "$h2").is_err());
+    }
+
+    #[test]
+    fn list_users_returns_registered_accounts() {
+        let db = test_db();
+        assert!(db.list_users().unwrap().is_empty());
+        db.register_user("zeta", "$h").unwrap();
+        db.register_user("alpha", "$h").unwrap();
+        assert_eq!(db.list_users().unwrap(), vec!["alpha".to_string(), "zeta".to_string()]);
+    }
+
+    #[test]
+    fn per_user_data_is_isolated() {
+        // Unique temp dir so parallel test runs don't collide.
+        let dir = std::env::temp_dir().join(format!("leadgen_iso_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        set_user_data_dir(&dir.to_string_lossy());
+
+        let reg = test_db();
+        reg.create_user_data("alice").unwrap();
+        reg.create_user_data("bob").unwrap();
+
+        let alice = user_db_for("alice");
+        let bob = user_db_for("bob");
+
+        // Settings defaults are seeded per user.
+        assert!(!alice.get_keywords().is_empty());
+        assert!(!bob.get_keywords().is_empty());
+
+        // Insert a lead into Alice's DB only.
+        alice.insert_lead(&sample_lead()).unwrap();
+        assert_eq!(alice.list_leads(None, None, None, 100).unwrap().len(), 1);
+        // Bob never sees Alice's lead.
+        assert_eq!(bob.list_leads(None, None, None, 100).unwrap().len(), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
